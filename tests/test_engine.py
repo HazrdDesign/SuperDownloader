@@ -55,10 +55,15 @@ def test_unique_stem(tmp_path):
     assert unique_stem(tmp_path, "Video", "mp4") == "Video (1)"
     (tmp_path / "Video (1).mp4").write_bytes(b"x")
     assert unique_stem(tmp_path, "Video", "mp4") == "Video (2)"
-    # Same title as audio is free until an mp3 exists... but a leftover "Video.*" blocks it too.
-    assert unique_stem(tmp_path, "Video", "mp3") == "Video (2)"
+    # The MP3 of a video whose MP4 exists keeps the plain name.
+    assert unique_stem(tmp_path, "Video", "mp3") == "Video"
+    (tmp_path / "Video.mp3").write_bytes(b"x")
+    assert unique_stem(tmp_path, "Video", "mp3") == "Video (1)"
+    # Anything that could collide with yt-dlp's intermediate files blocks the name.
     (tmp_path / "Other.f137.mp4.part").write_bytes(b"x")
     assert unique_stem(tmp_path, "Other", "mp4") == "Other (1)"
+    (tmp_path / "Song.webm").write_bytes(b"x")
+    assert unique_stem(tmp_path, "Song", "mp3") == "Song (1)"
 
 
 def test_unique_stem_case_insensitive(tmp_path):
@@ -264,16 +269,21 @@ def test_dash_separate_streams_offer_real_heights(media_server):
     assert [q.key for q in res.qualities] == ["best", "h720", "h360", "audio"]
 
 
+def dash_listing(media_dir: Path) -> str:
+    d = media_dir / "dash"
+    return f"files={sorted(p.name for p in d.iterdir())}\nmanifest={(d / 'manifest.mpd').read_text()[:2000]}"
+
+
 @requires_ffmpeg
 @pytest.mark.parametrize("key,height", [("h720", 720), ("h360", 360)])
-def test_dash_download_merges_to_mp4_at_chosen_height(media_server, tmp_path, key, height):
+def test_dash_download_merges_to_mp4_at_chosen_height(media_server, media_dir, tmp_path, key, height):
     e = Engine()
     res = e.check_link(CheckRequest(f"{media_server}/dash/manifest.mpd"))
     quality = next(q for q in res.qualities if q.key == key)
     percents = []
     r = e.download(DownloadJob([res.url], quality, tmp_path),
                    lambda p: percents.append(p.percent) if p.percent is not None else None)
-    assert r.error is None, r.failures
+    assert r.error is None, (r.failures, dash_listing(media_dir))
     [f] = r.files
     assert f.suffix == ".mp4"
     probe = ffprobe_json(f)
@@ -287,7 +297,7 @@ def test_dash_download_merges_to_mp4_at_chosen_height(media_server, tmp_path, ke
 
 
 @requires_ffmpeg
-def test_cancel_during_fragment_download_leaves_no_partial_files(media_server, tmp_path):
+def test_cancel_during_fragment_download_leaves_no_partial_files(media_server, media_dir, tmp_path):
     e = Engine()
     res = e.check_link(CheckRequest(f"{media_server}/dashslow/manifest.mpd"))
     assert res.ok, res.result
@@ -299,7 +309,7 @@ def test_cancel_during_fragment_download_leaves_no_partial_files(media_server, t
             e.cancel()
 
     r = e.download(DownloadJob([res.url], res.qualities[0], tmp_path), on_progress)
-    assert hit.is_set()
+    assert hit.is_set(), (r.failures, dash_listing(media_dir))
     assert r.cancelled
     assert list(tmp_path.iterdir()) == []
 

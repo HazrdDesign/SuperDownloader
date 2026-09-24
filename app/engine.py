@@ -303,10 +303,16 @@ def _select(ydl, info: dict, quality: Quality) -> dict | None:
 
 
 def _selector_ydl():
-    return yt_dlp.YoutubeDL({
+    params = {
         "quiet": True, "no_warnings": True, "simulate": True, "check_formats": False,
         "logger": _YdlLogger(lambda s: s), "allow_unplayable_formats": False,
-    })
+    }
+    # yt-dlp picks different formats when it can't find FFmpeg (no merging), so the
+    # estimate must see the same FFmpeg the real download uses.
+    ff = paths.ffmpeg_dir()
+    if ff:
+        params["ffmpeg_location"] = str(ff)
+    return yt_dlp.YoutubeDL(params)
 
 
 def list_qualities(info: dict) -> list[Quality]:
@@ -375,11 +381,16 @@ def default_quality(qualities: list[Quality], preferred: str) -> Quality | None:
     return qualities[0]
 
 
+FINAL_EXTS = ("mp4", "mp3")
+
+
 def unique_stem(folder: Path, stem: str, ext: str) -> str:
     """``stem`` or ``stem (1)``, ``stem (2)``... so that nothing in ``folder`` is overwritten.
 
-    A candidate is taken if the final file exists or any file starts with ``candidate.``
-    (for example a leftover ``.part`` from another program).
+    A name is taken if ``name.<ext>`` exists, or if any other ``name.*`` file exists
+    that isn't a finished MP4/MP3 (for example ``name.webm`` or ``name.f137.mp4.part``),
+    because yt-dlp's intermediate files could collide with it. So the MP3 of a video
+    whose MP4 is already there is still saved as ``name.mp3``.
     """
     try:
         names = {n.lower() for n in os.listdir(folder)}
@@ -388,7 +399,9 @@ def unique_stem(folder: Path, stem: str, ext: str) -> str:
 
     def taken(candidate: str) -> bool:
         prefix = (candidate + ".").lower()
-        return f"{candidate}.{ext}".lower() in names or any(n.startswith(prefix) for n in names)
+        if f"{candidate}.{ext}".lower() in names:
+            return True
+        return any(n.startswith(prefix) and n[len(prefix):] not in FINAL_EXTS for n in names)
 
     if not taken(stem):
         return stem

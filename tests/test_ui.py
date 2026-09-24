@@ -112,7 +112,14 @@ def pump(app, seconds=0.2, until=None, stalls=None):
         if until and until():
             return True
         time.sleep(0.005)
-    return bool(until and until())
+    done = bool(until and until())
+    if until and not done:
+        # Show where every thread is stuck, to make a timeout on CI diagnosable.
+        import faulthandler
+        import sys
+        print(f"pump timed out after {seconds}s; stage={getattr(app, 'stage', '?')}", file=sys.stderr)
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+    return done
 
 
 def press(app, sequence):

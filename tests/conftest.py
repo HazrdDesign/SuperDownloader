@@ -71,7 +71,10 @@ def media_dir(tmp_path_factory):
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "50", "-qp", "10",
         "-s:v:0", "1280x720", "-s:v:1", "640x360", "-c:a", "aac",
         "-seg_duration", "2", "-adaptation_sets", "id=0,streams=v id=1,streams=a",
-        "-f", "dash", str(dash / "manifest.mpd")], check=True)
+        "-use_template", "1", "-use_timeline", "1",
+        "-init_seg_name", "init-$RepresentationID$.m4s",
+        "-media_seg_name", "chunk-$RepresentationID$-$Number%05d$.m4s",
+        "manifest.mpd"], check=True, cwd=dash)
     (d / "page.html").write_text(
         "<html><head><title>Two clips</title></head><body>"
         "<video src='clip.mp4'></video><video src='clip2.mp4'></video></body></html>", encoding="utf-8")

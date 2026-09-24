@@ -51,6 +51,13 @@ class RedactFilter(logging.Filter):
 REDACTOR = RedactFilter()
 
 
+def ensure_std_streams() -> None:
+    """A --windowed exe has no stdout/stderr (they are None); give libraries a harmless sink."""
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))  # noqa: SIM115
+
+
 def setup_logging() -> Path:
     log_dir = paths.logs_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -112,10 +119,75 @@ def selftest(out_file: str) -> int:
         report["ui_imports"] = "ok"
     except Exception as e:  # noqa: BLE001
         report["ui_imports"] = f"error: {e}"
+    report["engine_e2e"] = _selftest_engine(ffmpeg)
+    report["ui_window"] = _selftest_window()
     Path(out_file).write_text(json.dumps(report, indent=2), encoding="utf-8")
     ok = all(report[k] and not str(report[k]).startswith(("error", "missing"))
-             for k in ("engine_version", "ejs_version", "ffmpeg", "ffprobe", "deno", "ui_imports"))
+             for k in ("engine_version", "ejs_version", "ffmpeg", "ffprobe", "deno", "ui_imports",
+                       "engine_e2e", "ui_window"))
     return 0 if ok else 1
+
+
+def _selftest_engine(ffmpeg: Path | None) -> str:
+    """Offline end-to-end run: make a clip with the bundled FFmpeg, serve it locally,
+    check it and download it as MP4 and MP3 through the real engine."""
+    import functools
+    import http.server
+    import tempfile
+    import threading
+
+    from app.engine import CheckRequest, DownloadJob, Engine
+
+    if not ffmpeg:
+        return "error: no bundled ffmpeg"
+    try:
+        src = Path(tempfile.mkdtemp(prefix="vd-selftest-src-"))
+        out = Path(tempfile.mkdtemp(prefix="vd-selftest-out-"))
+        subprocess.run([str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=2",
+                        "-f", "lavfi", "-i", "sine=duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-shortest", str(src / "clip.mp4")],
+                       check=True, timeout=60, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(src))
+        handler.log_message = lambda *a, **k: None
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            eng = Engine()
+            res = eng.check_link(CheckRequest(f"http://127.0.0.1:{server.server_address[1]}/clip.mp4"))
+            if not res.ok:
+                return f"error: check {res.result.status.value}: {res.result.detail[-300:]}"
+            names = []
+            for q in (res.qualities[0], next(q for q in res.qualities if q.audio_only)):
+                r = eng.download(DownloadJob([res.url], q, out), lambda p: None)
+                if not r.files:
+                    return f"error: download {q.key}: {r.error.detail[-300:] if r.error else '?'}"
+                names.append(r.files[0].name)
+            return "ok: " + ", ".join(names)
+        finally:
+            server.shutdown()
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e!r}"
+
+
+def _selftest_window() -> str:
+    """Create and destroy the real main window (catches missing UI data files in the exe)."""
+    try:
+        import customtkinter as ctk
+
+        from app.settings import Settings
+        from app.ui_main import MainWindow
+
+        ctk.set_appearance_mode("dark")
+        win = MainWindow(Settings(), check_updates=False, save_settings=lambda s: None, warm_up_engine=False)
+        win.withdraw()
+        win.update()
+        win.open_settings()
+        win.update()
+        win.destroy()
+        return "ok"
+    except Exception as e:  # noqa: BLE001
+        return f"error: {e!r}"
 
 
 def run() -> int:
@@ -156,6 +228,7 @@ def run() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    ensure_std_streams()
     if len(argv) >= 2 and argv[0] == "--selftest":
         try:
             return selftest(argv[1])
