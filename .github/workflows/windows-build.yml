@@ -1,0 +1,76 @@
+name: windows-build
+
+# Builds VideoDownloader.exe exactly the way scripts\build.bat does on a user's PC,
+# self-tests the exe, and runs the live-site acceptance smoke tests.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build (scripts\build.bat)
+        shell: cmd
+        run: scripts\build.bat
+
+      - name: Exe size and startup time
+        shell: pwsh
+        run: |
+          $exe = Get-Item dist\VideoDownloader.exe
+          "Size: {0:N1} MB" -f ($exe.Length / 1MB)
+          $t = Measure-Command { Start-Process $exe.FullName -ArgumentList '--selftest', "$PWD\build\selftest2.json" -Wait }
+          "Cold start to self-test exit: {0:N1} s" -f $t.TotalSeconds
+
+      - name: Exe loads an updated engine from %APPDATA%
+        shell: pwsh
+        run: |
+          $appdata = Join-Path $env:RUNNER_TEMP 'vd-appdata'
+          $env:VD_APPDATA = $appdata
+          .venv\Scripts\python.exe -c "from app import updater; i = updater.check_for_update('2000.1.1'); print(updater.install_update(i))"
+          $env:VD_ENGINE_ALLOW_OLDER = '1'
+          $p = Start-Process dist\VideoDownloader.exe -ArgumentList '--selftest', "$appdata\selftest.json" -Wait -PassThru
+          Get-Content "$appdata\selftest.json"
+          $r = Get-Content "$appdata\selftest.json" | ConvertFrom-Json
+          if ($r.engine_source -ne 'updated' -or $r.engine_file -notlike "$appdata*") { throw 'exe did not load the downloaded engine' }
+
+      - name: Updater against real PyPI
+        shell: cmd
+        env:
+          VD_NETWORK_TESTS: "1"
+        run: .venv\Scripts\python.exe -m pytest tests\test_updater.py
+
+      - name: Live acceptance smoke tests (YouTube, Vimeo)
+        id: acceptance
+        continue-on-error: true
+        shell: cmd
+        run: .venv\Scripts\python.exe scripts\acceptance_smoke.py build\acceptance
+
+      - name: Acceptance report
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path build\acceptance\acceptance.md) {
+            Get-Content build\acceptance\acceptance.md
+            Get-Content build\acceptance\acceptance.md | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: VideoDownloader
+          path: |
+            dist/VideoDownloader.exe
+            build/selftest.json
+            build/acceptance/
+          if-no-files-found: warn

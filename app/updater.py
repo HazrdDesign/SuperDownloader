@@ -153,6 +153,8 @@ def bootstrap_engine(engine_dir: Path | None = None, packages: dict[str, str] | 
     """
     engine_dir = engine_dir or paths.engine_dir()
     packages = packages or PACKAGES
+    # CI uses this to prove the frozen exe can load a downloaded engine of the same version.
+    allow_older = allow_older or os.environ.get("VD_ENGINE_ALLOW_OLDER") == "1"
     main_dist = next(iter(packages))
     main_import = packages[main_dist]
     bundled = _dist_version(main_dist)
