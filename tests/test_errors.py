@@ -257,3 +257,11 @@ def test_errorinfo_is_frozen():
     info = ErrorInfo(Status.UNKNOWN, "x")
     with pytest.raises(Exception):
         info.status = Status.DRM  # type: ignore[misc]
+
+
+def test_vimeo_login_only_client_uses_neutral_sign_in_message():
+    msg = ("[vimeo] 76979871: The web client only works when logged-in. Use --cookies, --cookies-from-browser, "
+           "--username and --password, --netrc-cmd, or --netrc (vimeo) to provide account credentials.")
+    info = classify_error(msg)
+    assert info.status is Status.NEEDS_LOGIN
+    assert info.message.startswith("The site wants you to sign in first")

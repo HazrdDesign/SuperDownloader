@@ -381,7 +381,8 @@ def _message_for(status: Status, browser: str | None, password_given: bool,
         if browser:
             return (f"The login from {browser} didn't work. Make sure you're logged into the site in "
                     f"{browser}, close {browser} completely, then click Retry.")
-        if "confirm you" in low and "bot" in low:
+        if ("confirm you" in low and "bot" in low) or "only works when logged-in" in low:
+            # The site asks for a login even for public videos (bot checks, some networks).
             return ("The site wants you to sign in first. Log into it in your browser, then choose that "
                     "browser under 'Use login from'.")
         if "confirm your age" in low or "age-restricted" in low or "age restricted" in low:
