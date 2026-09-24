@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Build output
+build/
+dist/
+*.spec.bak
+
+# Third-party binaries fetched by scripts/fetch_ffmpeg.ps1 (never committed)
+vendor/ffmpeg/
+vendor/deno/
+vendor/_downloads/
