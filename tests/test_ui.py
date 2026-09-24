@@ -158,6 +158,10 @@ def make_app(tmp_path):
             a.destroy()
         except tk.TclError:
             pass
+    # Collect destroyed windows' fonts/images here on the main thread; if a worker thread in a
+    # later test collected them, Tk would make it wait for a main loop that pump() doesn't run.
+    import gc
+    gc.collect()
 
 
 def check(app, url, timeout=5):
@@ -479,6 +483,8 @@ def test_folder_setting_persists_across_restart(tmp_path, monkeypatch):
     pump(app2, 0.3)
     assert str(folder) in app2.folder_label.cget("text") or "…" in app2.folder_label.cget("text")
     app2.destroy()
+    import gc
+    gc.collect()
 
 
 def test_minimum_width(make_app):

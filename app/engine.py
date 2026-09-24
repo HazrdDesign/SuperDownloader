@@ -10,6 +10,7 @@ DRM: this module never enables ``allow_unplayable_formats`` and stops with a
 from __future__ import annotations
 
 import copy
+import gc
 import logging
 import os
 import re
@@ -645,6 +646,8 @@ class Engine:
         before = _listdir(folder)
         stem = ""
         title = url
+        outcome: ErrorInfo | None = None
+        cancelled = False
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 # Resolve the video and pick formats first, so we know the title and can
@@ -663,15 +666,21 @@ class Engine:
                 ydl.params["outtmpl"]["default"] = stem.replace("%", "%%") + ".%(ext)s"
                 log.info("Downloading item %d/%d as %s.%s", index, total, stem, job.quality.ext)
                 ydl.process_ie_result(info, download=True)
-        except BaseException as e:
+        except BaseException as e:  # noqa: BLE001
+            cancelled = isinstance(e, (DownloadCancelled, KeyboardInterrupt)) or self._cancel.is_set()
+            if not cancelled:
+                outcome = self._classify(e, job.login, job.password, job.referer)
+            # Leave the except block before cleaning up: the traceback keeps yt-dlp's frames,
+            # and with them its open .part file, alive. Windows can't delete open files.
+        if cancelled or outcome is not None:
+            gc.collect()
             self._cleanup(folder, stem, before)
-            if isinstance(e, (DownloadCancelled, KeyboardInterrupt)) or self._cancel.is_set():
+            if cancelled:
                 log.info("Download cancelled; partial files removed")
-                raise _Cancelled() from e
-            info_err = self._classify(e, job.login, job.password, job.referer)
-            log.info("Download failed: %s", info_err.status.value)
-            log.debug("Download failure detail: %s", info_err.detail)
-            raise _Failed(title, info_err) from e
+                raise _Cancelled()
+            log.info("Download failed: %s", outcome.status.value)
+            log.debug("Download failure detail: %s", outcome.detail)
+            raise _Failed(title, outcome)
 
         final = folder / f"{stem}.{job.quality.ext}"
         if final.is_file():
@@ -692,7 +701,7 @@ class Engine:
             if not name.startswith(prefix):
                 continue
             target = folder / name
-            for attempt in range(10):
+            for attempt in range(15):
                 try:
                     if target.is_dir():
                         break

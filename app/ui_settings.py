@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import gc
 import logging
 import queue
 import threading
@@ -131,6 +132,12 @@ class SettingsWindow(ctk.CTkToplevel):
         self.bind("<Return>", lambda _e: self.save())
         self.after(100, self._grab)
         self.after(50, self._poll)
+
+    def destroy(self) -> None:
+        super().destroy()
+        # Collect this window's Tk objects (fonts, images) now, on the UI thread. Otherwise a
+        # background thread may collect them later and have to wait on the UI thread.
+        gc.collect()
 
     def _grab(self) -> None:
         try:
