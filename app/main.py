@@ -88,41 +88,50 @@ def _tool_version(exe: Path | None, *args: str) -> str | None:
 
 
 def selftest(out_file: str) -> int:
+    """Headless check of the packaged app. The report is rewritten after every stage, so if
+    something hangs, the file shows how far it got."""
+    out = Path(out_file)
+    report: dict = {"stage": "starting", "frozen": bool(getattr(sys, "frozen", False)),
+                    "python": sys.version.split()[0]}
+
+    def save(stage: str) -> None:
+        report["stage"] = stage
+        out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+    save("bootstrap")
     state = updater.bootstrap_engine()
     from app import engine
     import yt_dlp
+    report.update({"engine_version": engine.engine_version(), "engine_source": state.source,
+                   "engine_error": state.error, "engine_file": getattr(yt_dlp, "__file__", None)})
     try:
         import yt_dlp_ejs
-        ejs = yt_dlp_ejs.version
+        report["ejs_version"] = yt_dlp_ejs.version
     except Exception as e:  # noqa: BLE001
-        ejs = f"missing: {e}"
+        report["ejs_version"] = f"missing: {e}"
+    save("tools")
     ff = paths.ffmpeg_dir()
     ffmpeg = ff / ("ffmpeg.exe" if sys.platform == "win32" else "ffmpeg") if ff else None
     ffprobe = ff / ("ffprobe.exe" if sys.platform == "win32" else "ffprobe") if ff else None
-    report = {
-        "frozen": bool(getattr(sys, "frozen", False)),
-        "python": sys.version.split()[0],
-        "engine_version": engine.engine_version(),
-        "engine_source": state.source,
-        "engine_error": state.error,
-        "engine_file": getattr(yt_dlp, "__file__", None),
-        "ejs_version": ejs,
+    report.update({
         "ffmpeg": _tool_version(ffmpeg, "-version"),
         "ffprobe": _tool_version(ffprobe, "-version"),
         "deno": _tool_version(paths.deno_exe(), "--version"),
         "downloads_dir": str(paths.downloads_dir()),
         "app_data_dir": str(paths.app_data_dir()),
-    }
+    })
     try:
         import customtkinter  # noqa: F401
         import PIL  # noqa: F401
         report["ui_imports"] = "ok"
     except Exception as e:  # noqa: BLE001
         report["ui_imports"] = f"error: {e}"
+    save("engine_e2e")
     report["engine_e2e"] = _selftest_engine(ffmpeg)
+    save("ui_window")
     report["ui_window"] = _selftest_window()
-    Path(out_file).write_text(json.dumps(report, indent=2), encoding="utf-8")
-    ok = all(report[k] and not str(report[k]).startswith(("error", "missing"))
+    save("done")
+    ok = all(report.get(k) and not str(report[k]).startswith(("error", "missing"))
              for k in ("engine_version", "ejs_version", "ffmpeg", "ffprobe", "deno", "ui_imports",
                        "engine_e2e", "ui_window"))
     return 0 if ok else 1

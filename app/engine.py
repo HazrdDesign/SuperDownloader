@@ -350,12 +350,22 @@ def list_qualities(info: dict) -> list[Quality]:
     return sized
 
 
+# Held while warm_up() runs, so a link check never imports yt-dlp's extractor modules at the
+# same time from a second thread; a check that arrives early waits (about a second at most).
+_WARM_LOCK = threading.Lock()
+
+
 def warm_up() -> None:
     """Compile yt-dlp's URL patterns ahead of time.
 
     The first link check otherwise spends most of a second compiling ~1,800
     regular expressions. Run this in a background thread at startup.
     """
+    with _WARM_LOCK:
+        _warm_up()
+
+
+def _warm_up() -> None:
     t0 = time.perf_counter()
     try:
         from yt_dlp.extractor import gen_extractor_classes
@@ -503,6 +513,8 @@ class Engine:
     # -- check -----------------------------------------------------------------------------
 
     def check_link(self, req: CheckRequest) -> CheckResult:
+        with _WARM_LOCK:
+            pass  # wait for a running warm-up to finish
         url = normalize_url(req.url)
         if not url:
             return CheckResult(classify_error(f"{req.url!r} is not a valid URL"))

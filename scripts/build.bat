@@ -50,16 +50,11 @@ rem ---- 6. Package ------------------------------------------------------------
 echo Building the exe (this takes a few minutes) ...
 "%VPY%" -m PyInstaller --noconfirm --clean VideoDownloader.spec || goto :fail
 
-rem ---- 7. Self-test the exe (headless: engine, FFmpeg, Deno) --------------------------------------
-if not exist build mkdir build
-del /q "build\selftest.json" >nul 2>&1
-start "" /wait "dist\VideoDownloader.exe" --selftest "%CD%\build\selftest.json"
-if errorlevel 1 (
-    echo The built exe failed its self-test:
-    type "build\selftest.json"
+rem ---- 7. Self-test the exe (headless: engine, FFmpeg, Deno, offline download, windows) -----------
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\selftest.ps1" || (
+    echo The built exe failed its self-test.
     goto :fail
 )
-type "build\selftest.json"
 
 echo.
 echo Done: %CD%\dist\VideoDownloader.exe

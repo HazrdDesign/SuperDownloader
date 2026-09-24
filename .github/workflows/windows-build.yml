@@ -22,15 +22,21 @@ jobs:
 
       - name: Build (scripts\build.bat)
         shell: cmd
+        timeout-minutes: 30
         run: scripts\build.bat
+
+      - name: Self-test report
+        if: always()
+        shell: pwsh
+        run: if (Test-Path build\selftest.json) { Get-Content build\selftest.json } else { "no self-test report" }
 
       - name: Exe size and startup time
         shell: pwsh
         run: |
           $exe = Get-Item dist\VideoDownloader.exe
           "Size: {0:N1} MB" -f ($exe.Length / 1MB)
-          $t = Measure-Command { Start-Process $exe.FullName -ArgumentList '--selftest', "$PWD\build\selftest2.json" -Wait }
-          "Cold start to self-test exit: {0:N1} s" -f $t.TotalSeconds
+          # Second run: the self-test prints how long it took from launch to exit.
+          scripts\selftest.ps1 -Report "$PWD\build\selftest2.json" | Select-Object -First 1
 
       - name: Exe loads an updated engine from %APPDATA%
         shell: pwsh
@@ -39,8 +45,7 @@ jobs:
           $env:VD_APPDATA = $appdata
           .venv\Scripts\python.exe -c "from app import updater; i = updater.check_for_update('2000.1.1'); print(updater.install_update(i))"
           $env:VD_ENGINE_ALLOW_OLDER = '1'
-          $p = Start-Process dist\VideoDownloader.exe -ArgumentList '--selftest', "$appdata\selftest.json" -Wait -PassThru
-          Get-Content "$appdata\selftest.json"
+          scripts\selftest.ps1 -Report "$appdata\selftest.json"
           $r = Get-Content "$appdata\selftest.json" | ConvertFrom-Json
           if ($r.engine_source -ne 'updated' -or $r.engine_file -notlike "$appdata*") { throw 'exe did not load the downloaded engine' }
 
