@@ -289,20 +289,24 @@ def _estimate_size(selected: dict, duration: float | None) -> int | None:
     return int(total)
 
 
-def _select(info: dict, quality: Quality) -> dict | None:
+def _select(ydl, info: dict, quality: Quality) -> dict | None:
     """Run yt-dlp's own format selector offline, so sizes match what will be downloaded."""
-    params = {
-        "quiet": True, "no_warnings": True, "simulate": True, "check_formats": False,
-        "logger": _YdlLogger(lambda s: s), "allow_unplayable_formats": False,
-        **{k: v for k, v in quality.ydl_opts().items() if k != "postprocessors"},
-    }
+    opts = quality.ydl_opts()
+    ydl.params["format"] = opts["format"]
+    ydl.params["format_sort"] = opts["format_sort"]
     slim = {k: v for k, v in info.items() if k not in ("requested_formats", "requested_downloads")}
     try:
-        with yt_dlp.YoutubeDL(params) as ydl:
-            return ydl.process_ie_result(copy.deepcopy(slim), download=False)
+        return ydl.process_ie_result(copy.deepcopy(slim), download=False)
     except Exception as e:  # noqa: BLE001 - sizing is best-effort
         log.debug("Format selection for %s failed: %s", quality.key, e)
         return None
+
+
+def _selector_ydl():
+    return yt_dlp.YoutubeDL({
+        "quiet": True, "no_warnings": True, "simulate": True, "check_formats": False,
+        "logger": _YdlLogger(lambda s: s), "allow_unplayable_formats": False,
+    })
 
 
 def list_qualities(info: dict) -> list[Quality]:
@@ -327,16 +331,37 @@ def list_qualities(info: dict) -> list[Quality]:
     out.append(Quality("audio", "Audio only (MP3)", audio_only=True))
 
     sized = []
-    for q in out:
-        size = None
-        if q.audio_only and duration:
-            size = int(duration * MP3_KBPS * 1000 / 8)
-        else:
-            selected = _select(info, q)
-            if selected:
-                size = _estimate_size(selected, duration)
-        sized.append(Quality(q.key, q.label, q.height, q.audio_only, size))
+    with _selector_ydl() as ydl:  # one instance for all choices: creating one is slow
+        for q in out:
+            size = None
+            if q.audio_only and duration:
+                size = int(duration * MP3_KBPS * 1000 / 8)
+            else:
+                selected = _select(ydl, info, q)
+                if selected:
+                    size = _estimate_size(selected, duration)
+            sized.append(Quality(q.key, q.label, q.height, q.audio_only, size))
     return sized
+
+
+def warm_up() -> None:
+    """Compile yt-dlp's URL patterns ahead of time.
+
+    The first link check otherwise spends most of a second compiling ~1,800
+    regular expressions. Run this in a background thread at startup.
+    """
+    t0 = time.perf_counter()
+    try:
+        from yt_dlp.extractor import gen_extractor_classes
+        for ie in gen_extractor_classes():
+            try:
+                ie.suitable("https://example.com/watch?v=warmup")
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0)  # yield the GIL to the UI thread between extractors
+    except Exception as e:  # noqa: BLE001
+        log.debug("Warm-up failed: %s", e)
+    log.debug("Engine warm-up took %.2fs", time.perf_counter() - t0)
 
 
 def default_quality(qualities: list[Quality], preferred: str) -> Quality | None:
@@ -373,6 +398,13 @@ def unique_stem(folder: Path, stem: str, ext: str) -> str:
     return f"{stem} ({n})"
 
 
+def safe_folder_name(name: str) -> str:
+    """A Windows-safe folder name for a playlist title."""
+    from yt_dlp.utils import sanitize_filename
+    cleaned = sanitize_filename(name or "", restricted=False).strip(" .")
+    return cleaned[:100].strip(" .") or "Playlist"
+
+
 def fetch_thumbnail(url: str, timeout: float = 10) -> bytes | None:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -387,22 +419,36 @@ def fetch_thumbnail(url: str, timeout: float = 10) -> bytes | None:
 # Engine
 # --------------------------------------------------------------------------------------------
 
+# Values that must never reach a log file (video passwords). Shared with the app's log filter.
+_SECRETS: set[str] = set()
+_COOKIE_RX = re.compile(r"(?i)((?:set-)?cookie:\s*)[^\n]+")
+
+
+def register_secret(value: str | None) -> None:
+    if value:
+        _SECRETS.add(value)
+
+
+def redact(text: str) -> str:
+    """Mask registered secrets and cookie headers in ``text``."""
+    for secret in _SECRETS:
+        text = text.replace(secret, "********")
+    return _COOKIE_RX.sub(r"\1<redacted>", text)
+
+
 class Engine:
     def __init__(self) -> None:
         self._cancel = threading.Event()
-        self._secrets: set[str] = set()
 
     # -- options ---------------------------------------------------------------------------
 
-    def redact(self, text: str) -> str:
-        for secret in self._secrets:
-            if secret:
-                text = text.replace(secret, "********")
-        return re.sub(r"(?i)(cookie:\s*)[^\n]+", r"\1<redacted>", text)
+    @staticmethod
+    def redact(text: str) -> str:
+        return redact(text)
 
     def _base_opts(self, login: LoginSource, password: str | None, referer: str | None,
                    logger: _YdlLogger) -> dict:
-        self._secrets = {password} if password else set()
+        register_secret(password)
         opts: dict = {
             "quiet": True,
             "no_warnings": False,

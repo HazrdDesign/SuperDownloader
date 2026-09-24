@@ -316,3 +316,12 @@ def test_progress_fragment_estimate_is_clamped_and_never_goes_back():
     # A noisy, lower reading never moves the bar backwards.
     assert st.update({**frag, "fragment_index": 4, "downloaded_bytes": 1, "total_bytes_estimate": 10}).percent \
         == pytest.approx(50)
+
+
+def test_safe_folder_name():
+    from app.engine import safe_folder_name
+    assert safe_folder_name('My: "Mix"?') not in ("", "Playlist")
+    assert not any(c in safe_folder_name('a<b>c|d*e/f\\g') for c in '<>|*/\\')
+    assert safe_folder_name("...") == "Playlist"
+    assert safe_folder_name("") == "Playlist"
+    assert len(safe_folder_name("x" * 500)) <= 100
