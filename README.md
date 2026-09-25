@@ -154,8 +154,9 @@ installer, runs the installed app, and runs live checks against YouTube and Vime
 
 ### Changing the brand colors
 
-All colors are in **`app/theme.py`**: `BACKGROUND`, `TEXT`, `ACCENT` (buttons, progress bars), and `ACCENT_TEXT`
-(text on accent buttons). Everything else is derived from them. After changing them, run
+All colors are in **`app/theme.py`**: `BACKGROUND` (`#232323`), `TEXT` (white), `ACCENT` (`#FF3B33`: the main button
+on each screen, progress bars, ticks) and `ACCENT_TEXT` (white text on the red). Other buttons are outlined so the
+red stays reserved for the main action. Everything else is derived from them. After changing them, run
 `python scripts\make_icon.py` to recolor the icon, then rebuild. The green, amber and red status colors are deliberately
 not brand colors, so success and failure stay easy to tell apart.
 

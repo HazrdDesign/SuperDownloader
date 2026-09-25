@@ -175,8 +175,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.body.grid(row=0, column=0, sticky="nsew", padx=PAD, pady=(PAD - 4, PAD))
         self.body.grid_columnconfigure(0, weight=1)
         self.sections: dict[str, ctk.CTkFrame] = {}
-        secondary = {"fg_color": "transparent", "border_width": 1, "border_color": theme.BORDER,
-                     "text_color": theme.TEXT, "hover_color": theme.SURFACE_2}
+        secondary = theme.SECONDARY_BUTTON
         self._secondary = secondary
 
         # -- header -------------------------------------------------------------------------
@@ -197,7 +196,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.url_entry = ctk.CTkEntry(url, textvariable=self.url_var, height=38,
                                       placeholder_text="Paste a video link (or several) here")
         self.url_entry.grid(row=0, column=0, sticky="ew")
-        self.paste_btn = ctk.CTkButton(url, text="Paste", width=70, height=38, command=self.paste_url)
+        self.paste_btn = ctk.CTkButton(url, text="Paste", width=70, height=38, command=self.paste_url, **secondary)
         self.paste_btn.grid(row=0, column=1, padx=(8, 0))
         self.check_btn = ctk.CTkButton(url, text="Check", width=70, height=38, command=self.start_check,
                                        **secondary)

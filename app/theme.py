@@ -4,19 +4,18 @@ Every color in the app comes from this file. To rebrand, change the BRAND values
 the status colors (green / amber / red) stay separate so success and failure are always
 easy to tell apart.
 
-TODO(brand): replace the placeholder values with the dgnl.co hex codes
-(background, text, accent). Dark theme, single accent.
+dgnl.co palette: background #232323, white text, accent #FF3B33. Dark theme, single accent.
 """
 
 from __future__ import annotations
 
 import customtkinter as ctk
 
-# --- Brand (placeholders until the dgnl.co hex codes are supplied) ------------------------------
-BACKGROUND = "#101010"    # window background
-TEXT = "#F2F2F2"          # main text
-ACCENT = "#F2F2F2"        # buttons, progress bars, selected items
-ACCENT_TEXT = "#101010"   # text on accent-colored buttons (must contrast with ACCENT)
+# --- Brand (dgnl.co) ------------------------------------------------------------------------------
+BACKGROUND = "#232323"    # window background
+TEXT = "#F2F2F2"          # main text (a soft white: easier on the eyes than pure white on dark)
+ACCENT = "#FF3B33"        # buttons, progress bars, selected items
+ACCENT_TEXT = "#FFFFFF"   # text on accent-colored buttons (pure white for the most contrast on the red)
 
 # --- Derived neutrals (computed from the brand so the whole UI follows it) ----------------------
 
@@ -34,6 +33,11 @@ BORDER = _mix(BACKGROUND, TEXT, 0.22)
 MUTED = _mix(TEXT, BACKGROUND, 0.42)         # secondary text
 ACCENT_HOVER = _mix(ACCENT, BACKGROUND, 0.18)
 ACCENT_DIM = _mix(ACCENT, BACKGROUND, 0.55)
+
+# Red is kept for the one main action on each screen (Download, Retry, Save...). Everything
+# else uses this outlined style, so the accent stays meaningful.
+SECONDARY_BUTTON = {"fg_color": "transparent", "border_width": 1, "border_color": BORDER,
+                    "text_color": TEXT, "hover_color": SURFACE_2}
 
 # --- Status (not brand: they must read as success / attention / failure) ------------------------
 OK = "#2FBF71"

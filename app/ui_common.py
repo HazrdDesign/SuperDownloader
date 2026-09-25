@@ -26,7 +26,7 @@ BANNER_COLORS = {
 # A colored dot in the accent color (Tk 8.6 cannot reliably draw emoji on Windows).
 BANNER_DOT = "●"
 MUTED = theme.MUTED
-LINK = theme.ACCENT
+LINK = theme.TEXT  # text links stay white; red is for the main button
 PAD = 16
 
 

@@ -1,6 +1,6 @@
 # Super Downloader 2.0: checklist and test results (2026-09-25)
 
-This release covers the rename, the dgnl.co theme (placeholder colors for now), the simpler login, and these
+This release covers the rename, the dgnl.co theme, the simpler login, and these
 features: queue, history, project folders and naming, clip ranges, editing formats (Original kept as the default),
 subtitles, the installer, and the conveniences (drag and drop, copied links, a sound and taskbar flash when done, faster chunked downloads).
 It also fixes the crash from the user log: `image "pyimage1" doesn't exist`.
@@ -48,4 +48,5 @@ or offers only DRM streams. The app showed the right messages. These have to be 
    - Drag a link from the browser's address bar onto the window.
    - Copy a link in the browser, click the app, and check the link is picked up.
    - Download something, switch to another app, and check you hear the sound and see the taskbar flash when it finishes.
-9. **Brand colors:** once the dgnl.co hex codes are in `app/theme.py`, check that the buttons, progress bar and icon use them.
+9. **Brand colors** (background `#232323`, white text, accent `#FF3B33`): check that the Download, Retry and Save
+   buttons, the progress bar, the ticks and the taskbar icon are red, and the other buttons are outlined.

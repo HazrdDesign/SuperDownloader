@@ -72,7 +72,7 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkLabel(body, text="Default save folder").grid(row=row, column=0, sticky="w", padx=(0, 12))
         self.folder_label = ctk.CTkLabel(body, text="", anchor="w", width=280)
         self.folder_label.grid(row=row, column=1, sticky="ew")
-        ctk.CTkButton(body, text="Browse", width=80, command=self._browse).grid(row=row, column=2, padx=(8, 0))
+        ctk.CTkButton(body, text="Browse", width=80, command=self._browse, **theme.SECONDARY_BUTTON).grid(row=row, column=2, padx=(8, 0))
         row += 1
         self.folder_hint = ctk.CTkLabel(body, text="", text_color=MUTED, anchor="w")
         self.folder_hint.grid(row=row, column=1, columnspan=2, sticky="w")
@@ -126,7 +126,8 @@ class SettingsWindow(ctk.CTkToplevel):
         where = " (updated)" if st.source == "updated" else ""
         self.engine_label = ctk.CTkLabel(body, text=f"yt-dlp {st.version or '?'}{where}", anchor="w")
         self.engine_label.grid(row=row, column=1, sticky="w")
-        self.update_btn = ctk.CTkButton(body, text="Check for update", width=140, command=self._check_update)
+        self.update_btn = ctk.CTkButton(body, text="Check for update", width=140, command=self._check_update,
+                                        **theme.SECONDARY_BUTTON)
         self.update_btn.grid(row=row, column=2, padx=(8, 0))
         row += 1
         self.engine_status = ctk.CTkLabel(body, text="", anchor="w", justify="left", wraplength=380)
