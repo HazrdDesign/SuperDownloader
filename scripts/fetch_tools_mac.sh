@@ -12,7 +12,7 @@
 #
 # To move to newer builds, change the URL and hash together.
 #
-# If an FFmpeg URL/hash below is empty, the script downloads the latest release instead and
+# If an FFmpeg URL/hash below is empty, the script finds the newest release on the site instead and
 # prints its exact URL and SHA-256 so they can be pinned (the build still runs, with a warning).
 #
 # Usage: scripts/fetch_tools_mac.sh [--force]
@@ -22,7 +22,7 @@ FFMPEG_URL="${FFMPEG_URL:-}"
 FFMPEG_SHA256=""
 FFPROBE_URL="${FFPROBE_URL:-}"
 FFPROBE_SHA256=""
-FFMPEG_LATEST="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release"
+FFMPEG_SITE="https://ffmpeg.martin-riedl.de"
 
 DENO_VERSION="2.9.6"
 DENO_URL="https://registry.npmjs.org/@deno/darwin-arm64/-/darwin-arm64-${DENO_VERSION}.tgz"
@@ -55,15 +55,28 @@ fetch() {
     fi
 }
 
-# The final (versioned) address behind the "latest" redirect.
-resolve() { curl -fsSIL --retry 4 -o /dev/null -w '%{url_effective}' "$1"; }
+# The newest macOS arm64 *release* download of PROGRAM (ffmpeg or ffprobe) listed on the site.
+# Release folders look like .../macos/arm64/<build id>_<version>/<program>.zip.
+latest_release() {
+    local program="$1" page links url
+    page="$(curl -fsSL --retry 4 "$FFMPEG_SITE/")"
+    links="$(grep -oE 'href="[^"]+"' <<< "$page" | sed -E 's/^href="//; s/"$//' | grep -iE 'mac' || true)"
+    url="$(grep -E "macos/arm64/[^/]*_[0-9]+(\.[0-9]+)*/${program}\.zip$" <<< "$links" | head -1 || true)"
+    if [[ -z "$url" ]]; then
+        echo "error: no macOS arm64 release of $program found on $FFMPEG_SITE. Links seen:" >&2
+        echo "$links" >&2
+        exit 1
+    fi
+    [[ "$url" == http* ]] || url="$FFMPEG_SITE/${url#/}"
+    echo "$url"
+}
 
 if [[ "$FORCE" == "--force" ]]; then rm -rf "$VENDOR/ffmpeg" "$VENDOR/deno"; fi
 
 # --- FFmpeg + FFprobe ------------------------------------------------------------------------
 if [[ ! -x "$VENDOR/ffmpeg/ffmpeg" || ! -x "$VENDOR/ffmpeg/ffprobe" ]]; then
-    [[ -n "$FFMPEG_URL" ]] || FFMPEG_URL="$(resolve "$FFMPEG_LATEST/ffmpeg.zip")"
-    [[ -n "$FFPROBE_URL" ]] || FFPROBE_URL="$(resolve "$FFMPEG_LATEST/ffprobe.zip")"
+    [[ -n "$FFMPEG_URL" ]] || FFMPEG_URL="$(latest_release ffmpeg)"
+    [[ -n "$FFPROBE_URL" ]] || FFPROBE_URL="$(latest_release ffprobe)"
     fetch FFmpeg "$FFMPEG_URL" "$FFMPEG_SHA256" ffmpeg-macos-arm64.zip
     fetch FFprobe "$FFPROBE_URL" "$FFPROBE_SHA256" ffprobe-macos-arm64.zip
     rm -rf "$VENDOR/ffmpeg" && mkdir -p "$VENDOR/ffmpeg"
