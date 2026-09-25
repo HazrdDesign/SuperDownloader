@@ -73,11 +73,14 @@ HISTORY_ROWS_SHOWN = 50
 NO_SUBTITLES = "No subtitles"
 
 LOGIN_STATES = {Status.NEEDS_LOGIN, Status.COOKIES_LOCKED, Status.COOKIES_UNREADABLE, Status.COOKIES_MISSING}
+# Problems where checking again may help; the banner offers "Try again" (there's no Check button).
+RETRYABLE = {Status.NETWORK, Status.RATE_LIMITED, Status.NEEDS_UPDATE, Status.UNKNOWN, Status.REMOVED,
+             Status.GEO_BLOCKED, Status.UNSUPPORTED}
 LOGIN_HOSTS = ("vimeo.com",)  # sites where the login option is offered up front
 
 # Sections in the order they appear on screen.
 SECTIONS = ("header", "url", "spinner", "banner", "login", "password", "referer", "preview", "playlist",
-            "options", "more", "download", "progress", "done", "queue", "update", "history")
+            "options", "more", "progress", "done", "queue", "update", "history")
 
 try:  # drag and drop of links onto the window (optional; the app works without it)
     from tkinterdnd2 import DND_TEXT, TkinterDnD
@@ -195,12 +198,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.url_var = tk.StringVar()
         self.url_entry = ctk.CTkEntry(url, textvariable=self.url_var, height=38,
                                       placeholder_text="Paste a video link (or several) here")
-        self.url_entry.grid(row=0, column=0, sticky="ew")
-        self.paste_btn = ctk.CTkButton(url, text="Paste", width=70, height=38, command=self.paste_url, **secondary)
-        self.paste_btn.grid(row=0, column=1, padx=(8, 0))
-        self.check_btn = ctk.CTkButton(url, text="Check", width=70, height=38, command=self.start_check,
-                                       **secondary)
-        self.check_btn.grid(row=0, column=2, padx=(8, 0))
+        self.url_entry.grid(row=0, column=0, sticky="ew")  # links are checked as soon as they're pasted
         self.url_var.trace_add("write", self._on_url_changed)
 
         # -- spinner ------------------------------------------------------------------------
@@ -219,6 +217,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.banner_text = ctk.CTkLabel(banner, text="", justify="left", anchor="w", wraplength=420)
         self.banner_text.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=10)
         self.details_link = link_label(banner, "Details ▸", self.toggle_details)
+        self.banner_retry = link_label(banner, "Try again", self.retry)
         self.details_box = ctk.CTkTextbox(banner, height=110, wrap="word", font=ctk.CTkFont(family="Consolas", size=11))
         banner.bind("<Configure>", self._on_banner_resize)
 
@@ -275,24 +274,32 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.playlist_choice = ctk.CTkSegmentedButton(pl, values=["Just this video", "All videos"])
         self.playlist_choice.grid(row=1, column=0, sticky="w", pady=(6, 0))
 
-        # -- options: quality, format, save to --------------------------------------------------
+        # -- options: [Quality] [Format] [Download] on one row, then where it's saved -------------
         opt = self._section("options")
-        opt.grid_columnconfigure(1, weight=1)
-        self.quality_label = ctk.CTkLabel(opt, text="Quality")
-        self.quality_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.quality_menu = ctk.CTkOptionMenu(opt, values=["—"], dynamic_resizing=False)
-        self.quality_menu.grid(row=0, column=1, columnspan=2, sticky="ew")
-        ctk.CTkLabel(opt, text="Format").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        self.format_menu = ctk.CTkOptionMenu(opt, values=["—"], dynamic_resizing=False,
+        opt.grid_columnconfigure((0, 1), weight=1, uniform="menus")
+        caption = {"text_color": MUTED, "font": ctk.CTkFont(size=12), "anchor": "w", "height": 18}
+        self.quality_label = ctk.CTkLabel(opt, text="Quality", **caption)
+        self.quality_menu = ctk.CTkOptionMenu(opt, values=["—"], dynamic_resizing=False, height=38)
+        self.format_label = ctk.CTkLabel(opt, text="Format", **caption)
+        self.format_menu = ctk.CTkOptionMenu(opt, values=["—"], dynamic_resizing=False, height=38,
                                              command=lambda _v: self._on_format_changed())
-        self.format_menu.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
-        ctk.CTkLabel(opt, text="Save to").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        self.folder_label = ctk.CTkLabel(opt, text="", anchor="w", text_color=MUTED)
-        self.folder_label.grid(row=2, column=1, sticky="ew", pady=(8, 0))
-        ctk.CTkButton(opt, text="Change", width=70, command=self.change_folder, **secondary).grid(
-            row=2, column=2, padx=(8, 0), pady=(8, 0))
-        self.more_link = link_label(opt, "More options ▸", self.toggle_more)
-        self.more_link.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        Tooltip(self.format_menu, "Original: the video as the site has it (fastest).\n"
+                                  "Edit-ready: H.264 at a constant frame rate, for Premiere and Resolve.\n"
+                                  "ProRes 422 HQ: a .mov for editing (large files).")
+        self.download_btn = ctk.CTkButton(opt, text="Download", width=130, height=38,
+                                          font=ctk.CTkFont(size=14, weight="bold"), command=self.start_download)
+        self.download_btn.grid(row=1, column=2, sticky="e", padx=(8, 0))
+        self._place_menus(show_quality=True)
+        where = ctk.CTkFrame(opt, fg_color="transparent")
+        where.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        where.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(where, text="Save to", text_color=MUTED).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.folder_label = ctk.CTkLabel(where, text="", anchor="w", text_color=MUTED)
+        self.folder_label.grid(row=0, column=1, sticky="ew")
+        ctk.CTkButton(where, text="Change", width=70, height=26, command=self.change_folder, **secondary).grid(
+            row=0, column=2, padx=(8, 0))
+        self.more_link = link_label(where, "More options ▸", self.toggle_more)
+        self.more_link.grid(row=0, column=3, sticky="e", padx=(12, 0))
 
         # -- more options: clip, subtitles, project ---------------------------------------------
         more = self._section("more", corner_radius=8, fg_color=theme.SURFACE)
@@ -323,13 +330,6 @@ class MainWindow(ctk.CTk, _DnDBase):
         Tooltip(self.project_box, "Optional. Type \"Client / Project\": files go into that folder and are "
                                   "named Client_Project_date_Title.")
 
-        # -- download -----------------------------------------------------------------------
-        dl = self._section("download")
-        dl.grid_columnconfigure(0, weight=1)
-        self.download_btn = ctk.CTkButton(dl, text="Download", height=42, font=ctk.CTkFont(size=15, weight="bold"),
-                                          command=self.start_download)
-        self.download_btn.grid(row=0, column=0, sticky="ew")
-
         # -- progress -----------------------------------------------------------------------
         prog = self._section("progress")
         prog.grid_columnconfigure(0, weight=1)
@@ -342,7 +342,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.progress_text.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
         # -- done ---------------------------------------------------------------------------
-        done = self._section("done", corner_radius=8, fg_color=theme.OK_BG)
+        done = self._section("done", corner_radius=8, fg_color=theme.SURFACE)
         done.grid_columnconfigure(0, weight=1)
         self.done_text = ctk.CTkLabel(done, text="", justify="left", anchor="w", wraplength=460,
                                       font=ctk.CTkFont(weight="bold"))
@@ -466,6 +466,10 @@ class MainWindow(ctk.CTk, _DnDBase):
             self.details_link.grid(row=1, column=1, sticky="w", padx=(0, 12), pady=(0, 8))
         else:
             self.details_link.grid_remove()
+        if info.status in RETRYABLE and not (self.result is not None and self.result.ok):
+            self.banner_retry.grid(row=1, column=1, sticky="e", padx=(0, 12), pady=(0, 8))
+        else:
+            self.banner_retry.grid_remove()
         self._set_visible("banner")
 
     def _warn(self, message: str) -> None:
@@ -626,11 +630,11 @@ class MainWindow(ctk.CTk, _DnDBase):
             return
 
         self.last_error = None
-        self._only("banner", "preview", "options", "download", *keep)
+        self._only("preview", "options", *keep)  # the preview says it's ready; no banner needed
         if self._more_open:
             self._visible.add("more")
         self.login_retry.grid_remove()
-        self.show_banner(res.result)
+        self.banner_status = res.result.status
         v = res.video
         self.title_label.configure(text=v.title if v else "")
         meta = [x for x in (v.uploader if v else None, human_duration(v.duration) if v else None,
@@ -779,13 +783,25 @@ class MainWindow(ctk.CTk, _DnDBase):
     def _on_format_changed(self, relayout: bool = True) -> None:
         fmt = self._selected_format()
         show_quality = fmt.uses_quality and bool(self.result and self.result.qualities)
-        for w in (self.quality_label, self.quality_menu):
-            w.grid() if show_quality else w.grid_remove()
+        self._place_menus(show_quality)
         has_subs = bool(self.result and self.result.subtitles) and fmt.kind == "video"
         for w in (self.subs_label, self.subs_menu):
             w.grid() if has_subs else w.grid_remove()
         if relayout:
             self._relayout()
+
+    def _place_menus(self, show_quality: bool) -> None:
+        """Quality and Format side by side; Format takes both columns when there's no quality to pick."""
+        if show_quality:
+            self.quality_label.grid(row=0, column=0, sticky="w", pady=(0, 2))
+            self.quality_menu.grid(row=1, column=0, sticky="ew", padx=(0, 8))
+            self.format_label.grid(row=0, column=1, columnspan=1, sticky="w", pady=(0, 2))
+            self.format_menu.grid(row=1, column=1, columnspan=1, sticky="ew")
+        else:
+            self.quality_label.grid_remove()
+            self.quality_menu.grid_remove()
+            self.format_label.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 2))
+            self.format_menu.grid(row=1, column=0, columnspan=2, sticky="ew")
 
     def toggle_more(self) -> None:
         self._more_open = not self._more_open
@@ -1030,7 +1046,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         if r.cancelled:
             log.info("Download cancelled")
             self.stage = "checked"
-            self._only("banner", "preview", "options", "download", *keep)
+            self._only("banner", "preview", "options", *keep)
             self.show_banner(ErrorInfo(Status.CANCELLED, "Download cancelled. Partial files were removed."))
             self._relayout()
             return
@@ -1039,7 +1055,7 @@ class MainWindow(ctk.CTk, _DnDBase):
             log.info("Download failed: %s", err.status.value)
             self.stage = "checked"
             self.last_error = err
-            self._only("banner", "preview", "options", "download", *keep)
+            self._only("banner", "preview", "options", *keep)
             self.show_banner(err)
             self._reveal_for(err.status)
             self.download_btn.configure(text="Try again")
@@ -1093,7 +1109,8 @@ class MainWindow(ctk.CTk, _DnDBase):
 
     def _set_options_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        for w in (self.quality_menu, self.format_menu, self.subs_menu, self.playlist_choice, self.login_check):
+        for w in (self.quality_menu, self.format_menu, self.subs_menu, self.playlist_choice, self.login_check,
+                  self.download_btn):
             try:
                 w.configure(state=state)
             except (tk.TclError, ValueError):
@@ -1165,30 +1182,37 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.history_title.configure(text=f"History ({len(self.history.entries)})" if entries else "History")
 
     def _make_history_row(self, i: int, entry: HistoryEntry) -> None:
-        color = theme.OK if entry.ok else theme.ERROR
-        row = ctk.CTkFrame(self.history_list, fg_color=theme.OK_BG if entry.ok else theme.ERROR_BG, corner_radius=6)
-        row.grid(row=i, column=0, sticky="ew", padx=4, pady=2)
+        # One line per session. Only failures are colored (red); successful ones stay neutral.
+        failed = not entry.ok
+        row = ctk.CTkFrame(self.history_list, fg_color=theme.ERROR_BG if failed else "transparent", corner_radius=6,
+                           height=30)
+        row.grid(row=i, column=0, sticky="ew", padx=2, pady=1)
         row.grid_columnconfigure(1, weight=1)
-        bar = ctk.CTkFrame(row, width=4, height=30, fg_color=color, corner_radius=2)  # CTkFrame defaults to 200 px
-        bar.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(6, 8), pady=6)
-        title = ctk.CTkLabel(row, text=elide_middle(entry.title, 70), anchor="w", cursor="hand2")
-        title.grid(row=0, column=1, sticky="ew", pady=(4, 0))
+        bar = ctk.CTkFrame(row, width=3, height=18, fg_color=theme.ERROR if failed else "transparent",
+                           corner_radius=2)  # CTkFrame defaults to 200 px
+        bar.grid(row=0, column=0, padx=(6, 6), pady=6)
+        title = ctk.CTkLabel(row, text=elide_middle(entry.title, 44), anchor="w", cursor="hand2", height=24)
+        title.grid(row=0, column=1, sticky="ew")
         fmt = format_by_key(entry.format_key)
-        bits = [entry.site, fmt.label if fmt.key != "original" else "", history_mod.relative_time(entry.when)]
+        bits = ["Failed" if failed else "", entry.site, fmt.label if fmt.key != "original" else "",
+                history_mod.relative_time(entry.when)]
         if entry.count > 1:
-            bits.insert(0, f"{entry.count - entry.failed_count} of {entry.count} videos")
-        if not entry.ok and entry.error:
-            bits.append(entry.error)
-        meta = ctk.CTkLabel(row, text="  ·  ".join(b for b in bits if b), anchor="w", text_color=MUTED,
-                            cursor="hand2", justify="left")
-        meta.grid(row=1, column=1, sticky="ew", pady=(0, 4))
+            bits.insert(1, f"{entry.count - entry.failed_count}/{entry.count} videos")
+        meta = ctk.CTkLabel(row, text=" · ".join(b for b in bits if b), anchor="e", text_color=MUTED,
+                            cursor="hand2", height=24, font=ctk.CTkFont(size=12))
+        meta.grid(row=0, column=2, sticky="e", padx=(8, 8))
         if entry.ok and entry.first_file():
-            ctk.CTkButton(row, text="Show", width=54, height=26, command=lambda e=entry: self._show_history_file(e),
-                          **self._secondary).grid(row=0, column=2, rowspan=2, padx=6)
+            ctk.CTkButton(row, text="Show", width=48, height=22, font=ctk.CTkFont(size=12),
+                          command=lambda e=entry: self._show_history_file(e),
+                          **self._secondary).grid(row=0, column=3, padx=(0, 6))
         for w in (row, title, meta, bar):
             w.bind("<Button-1>", lambda _e, en=entry: self.redownload(en))
             w.bind("<Button-3>", lambda ev, en=entry: self._history_menu(ev, en))
-        Tooltip(title, "Click to download again" if entry.ok else "Click to try again")
+        tip = "Click to download again" if entry.ok else "Click to try again"
+        if failed and entry.error:
+            tip = f"{entry.error}\n{tip}"
+        Tooltip(title, f"{entry.title}\n{tip}")
+        Tooltip(meta, tip)
 
     def _show_history_file(self, entry: HistoryEntry) -> None:
         f = entry.first_file()

@@ -24,7 +24,7 @@ from .ui_common import MUTED, PAD, Tooltip, elide_middle, link_label, open_folde
 log = logging.getLogger(__name__)
 
 ERROR_COLOR = theme.ERROR
-OK_COLOR = theme.OK
+OK_COLOR = theme.TEXT
 NEVER_LABEL = "Never use a browser login"
 
 

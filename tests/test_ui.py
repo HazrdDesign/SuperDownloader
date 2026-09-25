@@ -45,7 +45,7 @@ ZEN = LoginSource("firefox:/zen", "Zen — Default (release)", "Zen", "firefox",
 CHROME = LoginSource("chrome", "Chrome (may not work)", "Chrome", "chrome", None,
                      note="Windows encryption usually blocks reading logins from Chrome, Edge and Brave.")
 QUALITIES = [
-    Quality("best", "Best available — 1080p", size=50_000_000),
+    Quality("best", "Best (1080p)", size=50_000_000),
     Quality("h1080", "1080p (Full HD)", 1080, size=50_000_000),
     Quality("h720", "720p (HD)", 720, size=20_000_000),
 ]
@@ -148,6 +148,8 @@ def press(app, sequence):
 
 
 def visible(app, name):
+    if name == "download":  # the Download button sits in the options row
+        return bool(app.download_btn.winfo_ismapped())
     return app.sections[name].winfo_ismapped()
 
 
@@ -228,13 +230,41 @@ def test_garbage_does_not_auto_check_but_manual_check_says_invalid(make_app):
     assert not visible(app, "download")
 
 
+def test_only_the_link_field_no_paste_or_check_buttons(make_app):
+    app = make_app()
+    assert not hasattr(app, "paste_btn") and not hasattr(app, "check_btn")
+    assert app.url_entry.grid_info()["columnspan"] in (1, "1")
+    assert len(app.sections["url"].grid_slaves()) == 1
+
+
+def test_network_problem_offers_try_again(make_app):
+    class Offline(FakeEngine):
+        def _check(self, req):
+            from app.engine import CheckResult
+            return CheckResult(classify_error("<urlopen error [Errno 11001] getaddrinfo failed>"))
+
+    eng = Offline()
+    app = make_app(eng)
+    check(app, "https://www.youtube.com/watch?v=1")
+    pump(app, 0.2)
+    assert app.banner_status is Status.NETWORK
+    assert app.banner_retry.winfo_ismapped()
+    n = len(eng.requests)
+    app.banner_retry._label.event_generate("<Button-1>")  # where a real click lands
+    assert pump(app, 3, lambda: len(eng.requests) > n)
+
+
 def test_ready_shows_preview_quality_format_and_defaults(make_app, tmp_path):
     app = make_app(settings=Settings(save_folder=str(tmp_path / "out"), default_quality="720",
                                      default_format="edit"))
     check(app, "https://www.youtube.com/watch?v=1")
     pump(app, 0.2)
-    for name in ("banner", "preview", "options", "download"):
+    for name in ("preview", "options", "download"):
         assert visible(app, name), name
+    assert app.banner_status is Status.READY and not visible(app, "banner")  # no green "Ready" banner
+    # Quality, Format and Download on one row.
+    rows = {w.grid_info()["row"] for w in (app.quality_menu, app.format_menu, app.download_btn)}
+    assert len(rows) == 1
     assert app.quality_menu.get().startswith("720p (HD)")
     assert "~" in app.quality_menu.get()  # approximate size shown
     assert app.format_menu.get() == FORMATS_BY_KEY["edit"].label
@@ -617,7 +647,7 @@ def test_cancel_a_waiting_queue_item(make_app):
 
 # ---- history --------------------------------------------------------------------------------------
 
-def test_history_rows_are_green_or_red_and_click_redownloads(make_app, tmp_path):
+def test_history_rows_red_when_failed_and_click_redownloads(make_app, tmp_path):
     from app import theme
     eng = FakeEngine()
     app = make_app(eng)
@@ -635,7 +665,8 @@ def test_history_rows_are_green_or_red_and_click_redownloads(make_app, tmp_path)
     rows = app.history_list.winfo_children()
     assert len(rows) == 2
     colors = [r.cget("fg_color") for r in rows]
-    assert colors == [theme.ERROR_BG, theme.OK_BG]
+    assert colors == [theme.ERROR_BG, "transparent"]  # only failures are colored
+    assert all(r.winfo_height() <= 40 for r in rows)  # one compact line each
     assert visible(app, "history")
 
     # Click the green row: the link comes back with the same format and subtitles.

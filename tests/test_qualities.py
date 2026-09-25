@@ -46,7 +46,7 @@ def keys(qs):
 def test_options_follow_real_heights_deduplicated():
     qs = list_qualities(youtube_like())
     assert keys(qs) == ["best", "h2160", "h1440", "h1080", "h720", "h360", "h144"]
-    assert qs[0].label == "Best available — 2160p"
+    assert qs[0].label == "Best (2160p)"
     assert qs[1].label == "2160p (4K)"
 
 

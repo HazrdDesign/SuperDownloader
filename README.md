@@ -5,7 +5,7 @@ right away whether it will work. Pick a quality and a format, then download. It 
 [yt-dlp](https://github.com/yt-dlp/yt-dlp), with FFmpeg and Deno built in, so there's nothing else
 to install.
 
-- **Paste, check, download.** One plain sentence tells you if a link works. The quality list comes from what the
+- **Paste, download.** The link is checked as soon as it's pasted; if there's a problem, one plain sentence says what. The quality list comes from what the
   video actually has (4K, 1080p, 720p…).
 - **Formats for editing:**
   - **Original MP4**, the default, with no re-encoding
@@ -14,7 +14,7 @@ to install.
   - **MP3** or **WAV** audio
   - the **full-resolution thumbnail** as a JPG
 - **Queue.** Keep pasting while something downloads, or paste a whole list of links at once.
-- **History.** Every past download is listed, green if it worked and red if it failed. Click one to download it again with the same settings.
+- **History.** Every past download is one compact line; failed ones are red. Click one to download it again with the same settings.
 - **More options** (hidden until you need them):
   - **Clip** a time range.
   - Save **subtitles** as `.srt`.
@@ -45,20 +45,20 @@ the first time Super Downloader starts.
 
 ## Using the app
 
-1. **Paste a link.** Use Ctrl+V or **Paste**, drag a link onto the window, or copy a link in your browser and switch
-   to the app, which picks it up for you. The check starts on its own.
-2. Read the colored message:
+1. **Paste a link** with Ctrl+V, drag it onto the window, or copy it in your browser and switch to the app, which
+   picks it up for you. The check starts on its own. When the link works, the video's title and thumbnail appear.
+2. If there's a problem, a message says what to do (the color shows whether you can fix it):
 
    | Message | What to do |
    |---|---|
-   | 🟢 **Ready to download** | Choose Quality and Format, then press Download. |
    | 🟡 **The site wants you to sign in / private video** | Log into the site in your browser and click **Retry**. The app tries each browser's login by itself. |
    | 🟡 **Needs a password** | Only if you were given the password: type it in and click **Retry**. |
    | 🟡 **Only plays on a specific website** | Enter the page it plays on and click **Retry**. |
    | 🔴 **Copy-protected** | This video can't be downloaded. |
-   | 🔴 **Not a web address / no video / not available / couldn't connect** | Check the link or your connection. **Details** has the technical error. |
+   | 🔴 **Not a web address / no video / not available / couldn't connect** | Check the link or your connection, then click **Try again**. **Details** has the technical error. |
 
-3. **Quality** is Best or any height the video really has. **Format** is described above.
+3. **Quality**, **Format** and **Download** sit on one row. Quality is Best or any height the video really has; Format is
+   described above (hover over it for a reminder).
 4. **More options ▸**
    - *Only part of the video*: enter a start and end time such as `1:30` and `2:05`.
    - *Subtitles*: a language the video has, saved next to the video as `.srt`.
@@ -87,12 +87,13 @@ tried first for that site next time. If none works, the message says which brows
 | Key | Action |
 |---|---|
 | Ctrl+V | Paste into the link box and check. Several links go into the queue. |
-| Enter | Check, or Download once the link is ready |
+| Enter | Check the link again, or Download once it's ready |
 | Esc | Cancel the download or the check |
 
 ### History
 
-Each download session is one row, green if it was saved and red if it failed. Cancelled downloads aren't listed.
+Each download session is one line: title on the left; site, format and time on the right. Failed ones are red (hover for
+the reason). Cancelled downloads aren't listed.
 - **Click** a row to put the link back with the same quality, format, subtitles, clip and project.
 - **Show** opens the file in Explorer.
 - **Right-click** a row for *Copy link* or *Remove from history*.
@@ -157,8 +158,8 @@ installer, runs the installed app, and runs live checks against YouTube and Vime
 All colors are in **`app/theme.py`**: `BACKGROUND` (`#232323`), `TEXT` (white), `ACCENT` (`#FF3B33`: the main button
 on each screen, progress bars, ticks) and `ACCENT_TEXT` (white text on the red). Other buttons are outlined so the
 red stays reserved for the main action. Everything else is derived from them. After changing them, run
-`python scripts\make_icon.py` to recolor the icon, then rebuild. The green, amber and red status colors are deliberately
-not brand colors, so success and failure stay easy to tell apart.
+`python scripts\make_icon.py` to recolor the icon, then rebuild. Only problems get a status color: amber (something
+you can fix) and red (failed). Success stays neutral, so the screen doesn't fill up with colors.
 
 ### Development
 

@@ -39,11 +39,11 @@ ACCENT_DIM = _mix(ACCENT, BACKGROUND, 0.55)
 SECONDARY_BUTTON = {"fg_color": "transparent", "border_width": 1, "border_color": BORDER,
                     "text_color": TEXT, "hover_color": SURFACE_2}
 
-# --- Status (not brand: they must read as success / attention / failure) ------------------------
-OK = "#2FBF71"
+# --- Status (not brand) --------------------------------------------------------------------------
+# Only problems are colored: amber for "you can fix this", red for "failed". Success stays neutral
+# so the screen isn't full of colors.
 WARN = "#E5B93A"
 ERROR = "#E5534B"
-OK_BG = _mix(BACKGROUND, OK, 0.16)
 WARN_BG = _mix(BACKGROUND, WARN, 0.16)
 ERROR_BG = _mix(BACKGROUND, ERROR, 0.16)
 

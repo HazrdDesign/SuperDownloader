@@ -43,7 +43,7 @@ or offers only DRM streams. The app showed the right messages. These have to be 
 5. **More options:** clip `0:10` to `0:20` and check the file is about 10 s long. Download subtitles and check an `.srt` sits next to the video.
    Set a project like `Test / Round 1` and check the folder and name.
 6. **Queue:** start a download, paste another link, press Download, and check it shows *Added to the queue*. Also paste 3 links at once.
-7. **History:** check a failed download is red. Click a green row and check the options come back. Try right-click → Copy link.
+7. **History:** check each session is one line and a failed download is red. Click a successful row and check the options come back. Try right-click → Copy link.
 8. **Conveniences:**
    - Drag a link from the browser's address bar onto the window.
    - Copy a link in the browser, click the app, and check the link is picked up.

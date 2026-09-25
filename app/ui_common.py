@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 # Banner colors: (background, accent) per severity. Status colors come from the theme.
 BANNER_COLORS = {
-    Severity.OK: (theme.OK_BG, theme.OK),
+    Severity.OK: (theme.SURFACE, theme.MUTED),  # neutral: success isn't highlighted
     Severity.WARN: (theme.WARN_BG, theme.WARN),
     Severity.ERROR: (theme.ERROR_BG, theme.ERROR),
 }

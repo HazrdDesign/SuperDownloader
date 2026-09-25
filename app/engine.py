@@ -91,7 +91,7 @@ class Quality:
 
     @property
     def display(self) -> str:
-        return f"{self.label}  ·  ~{human_size(self.size)}" if self.size else self.label
+        return f"{self.label} · ~{human_size(self.size)}" if self.size else self.label
 
 
 BEST = Quality("best", "Best available")
@@ -111,12 +111,12 @@ class OutputFormat:
 
 
 FORMATS = (
-    OutputFormat("original", "Original (MP4)", "mp4", "video"),
-    OutputFormat("edit", "Edit-ready MP4 (constant frame rate)", "mp4", "video", convert="edit"),
-    OutputFormat("prores", "ProRes 422 HQ (.mov) for editing", "mov", "video", convert="prores"),
-    OutputFormat("mp3", "Audio only (MP3)", "mp3", "audio"),
-    OutputFormat("wav", "Audio only (WAV)", "wav", "audio"),
-    OutputFormat("jpg", "Thumbnail image (JPG)", "jpg", "image"),
+    OutputFormat("original", "Original MP4", "mp4", "video"),
+    OutputFormat("edit", "Edit-ready MP4", "mp4", "video", convert="edit"),
+    OutputFormat("prores", "ProRes 422 HQ", "mov", "video", convert="prores"),
+    OutputFormat("mp3", "MP3 audio", "mp3", "audio"),
+    OutputFormat("wav", "WAV audio", "wav", "audio"),
+    OutputFormat("jpg", "Thumbnail (JPG)", "jpg", "image"),
 )
 FORMATS_BY_KEY = {f.key: f for f in FORMATS}
 ORIGINAL = FORMATS_BY_KEY["original"]
@@ -464,7 +464,7 @@ def has_video_formats(info: dict) -> bool:
 def list_qualities(info: dict) -> list[Quality]:
     """Video quality choices built from the formats the source actually has.
 
-    "Best available" plus each real height (deduplicated, highest first), with the size
+    "Best" plus each real height (deduplicated, highest first), with the size
     yt-dlp's own format selector would download. Audio-only sources get no choices (their
     formats are MP3/WAV, see :data:`FORMATS`).
     """
@@ -475,7 +475,7 @@ def list_qualities(info: dict) -> list[Quality]:
     heights = sorted({h for f in fmts if _has_video(f) and (h := _height_of(f))}, reverse=True)
 
     best_h = heights[0] if heights else None
-    out = [Quality("best", "Best available" + (f" — {best_h}p" if best_h else ""))]
+    out = [Quality("best", "Best" + (f" ({best_h}p)" if best_h else " available"))]
     for h in heights:
         name = HEIGHT_NAMES.get(h)
         out.append(Quality(f"h{h}", f"{h}p ({name})" if name else f"{h}p", height=h))
