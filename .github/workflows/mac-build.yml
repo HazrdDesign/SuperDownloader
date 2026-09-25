@@ -64,13 +64,20 @@ jobs:
         continue-on-error: true
         run: .venv/bin/python scripts/acceptance_smoke.py build/acceptance
 
+      # The download people use: just the installer (.dmg).
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: SuperDownloader-mac
+          path: dist/SuperDownloader-mac.dmg
+          if-no-files-found: error
+
+      - name: Test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-test-reports
           path: |
-            dist/SuperDownloader-mac.dmg
             build/selftest-mac.json
             build/installed-mac.json
             build/acceptance
-          if-no-files-found: warn
+          if-no-files-found: ignore
