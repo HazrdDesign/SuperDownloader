@@ -19,8 +19,9 @@ to install.
   - **Clip** a time range.
   - Save **subtitles** as `.srt`.
   - Set a **Client / Project**, which picks the folder and the file-name prefix.
-- **Private videos** use the login already saved in your browser (Firefox, Zen, LibreWolf or Floorp).
-  Your password is never seen or stored. Copy-protected (DRM) videos are detected and never downloaded.
+- **Private videos:** the app tries the login saved in each of your browsers, the one you used most recently
+  first, until one works. It remembers which one worked for each site. Your password is never seen or stored.
+  Copy-protected (DRM) videos are detected and never downloaded.
 
 ---
 
@@ -51,7 +52,7 @@ the first time Super Downloader starts.
    | Message | What to do |
    |---|---|
    | 🟢 **Ready to download** | Choose Quality and Format, then press Download. |
-   | 🟡 **The site wants you to sign in / private video** | Log into the site in your browser and click **Retry**. The app uses that browser's login automatically. |
+   | 🟡 **The site wants you to sign in / private video** | Log into the site in your browser and click **Retry**. The app tries each browser's login by itself. |
    | 🟡 **Needs a password** | Only if you were given the password: type it in and click **Retry**. |
    | 🟡 **Only plays on a specific website** | Enter the page it plays on and click **Retry**. |
    | 🔴 **Copy-protected** | This video can't be downloaded. |
@@ -67,10 +68,17 @@ the first time Super Downloader starts.
    If you paste another link meanwhile, the download carries on in the **Queue**.
 6. When it's done, click **Show in folder**. You'll also hear a sound and the taskbar button flashes if you're in another app.
 
-**Logins in one place.** Vimeo links show a single checkbox, *Log in with Zen (for private or password-protected
-videos)*, which is already ticked. For any other site the app quietly retries with your browser login if the site
-asks for one. The browser is picked automatically: whichever Firefox-family browser you used most recently. You can
-change it in Settings.
+**Logins, without choosing a browser.** Vimeo links show a single checkbox, *Log in with my browser (for private
+or password-protected videos)*, which is already ticked. For any other site the app first tries without a login and
+only uses one if the site asks. Either way it tries each browser in turn, the one you used most recently first,
+and shows *Trying your login from Chrome…* while it does. The first one that works is used for the download and
+tried first for that site next time. If none works, the message says which browsers were tried and why.
+
+| | Windows | Mac (coming later) |
+|---|---|---|
+| Firefox, Zen, LibreWolf, Floorp | ✅ | ✅ |
+| Chrome, Edge, Brave, Arc, Vivaldi, Opera | ❌ Windows blocks reading their logins, so they're tried last | ✅ The Mac asks once: choose **Always Allow** |
+| Safari | not on Windows | ✅ Needs **Full Disk Access** for Super Downloader |
 
 **Playlists.** The app asks whether you want just this video (the default) or all of them. A full playlist is saved in a folder named after it.
 
@@ -94,8 +102,8 @@ Each download session is one row, green if it was saved and red if it failed. Ca
 
 - **Default save folder.** Your Downloads folder unless you choose another.
 - **Default quality** and **Default format.**
-- **Browser for logins.** Automatic (recommended), a specific browser profile, a custom profile folder, or *Never*.
-  Chrome, Edge and Brave are listed, but Windows usually blocks reading their logins.
+- **Browser for logins.** *Automatic* (recommended) tries each browser in turn. You can also pick one browser
+  profile, a custom profile folder, or *Never*. On Windows, Chrome-based browsers are listed but usually can't be read.
 - **Use a video link I just copied** when switching to the app (on by default).
 - **Flash the taskbar and play a sound** when a download finishes (on by default).
 - **Downloader engine.** Shows the yt-dlp version. **Check for update** gets a newer one; restart the app to use it.
@@ -108,12 +116,13 @@ Settings, history and logs are in `%APPDATA%\SuperDownloader\`. Passwords and co
 
 ## Troubleshooting
 
-- **"The site wants you to sign in" or "private video":** open the site in your browser (Zen, Firefox, LibreWolf or
-  Floorp), make sure you're logged in and the video plays, then click **Retry**.
+- **"The site wants you to sign in" or "private video":** open the site in your browser, make sure you're logged in
+  and the video plays, then click **Retry**. On Windows that browser must be Firefox, Zen, LibreWolf or Floorp.
 - **"Couldn't read your login from … Close … completely":** close that browser fully (check the system tray) and click **Retry**.
 - **"The login from … didn't work":** your login there may have expired, so log in again. If you have several browser profiles,
   choose the right one in **Settings → Browser for logins**.
-- **Chrome / Edge / Brave:** Windows encryption usually blocks reading their logins. Use a Firefox-family browser for private videos.
+- **Chrome, Edge, Brave or Arc on Windows:** Windows encryption blocks reading their logins; the app tries them anyway and
+  moves on. For private videos, log in with a Firefox-family browser.
 - **"Couldn't read this page. The website may have changed."** or a site that suddenly stops working: go to **Settings →
   Check for update**, then restart the app.
 - **Edit-ready or ProRes takes a while:** those formats re-encode the video on your PC. The progress shows *Converting for editing… %*.
@@ -174,7 +183,7 @@ app/
   jobs.py          download queue (one at a time, background thread)
   history.py       download history (history.json)
   errors.py        classify_error: every error becomes one plain-English state
-  browsers.py      browser profile detection and automatic choice
+  browsers.py      browser detection (Windows and Mac) and the order logins are tried in
   settings.py      settings.json load/save, upgrades from older versions
   paths.py         %APPDATA% folders, Downloads (Known Folder API), bundled binaries, migration
   updater.py       engine updates from PyPI, loaded at startup

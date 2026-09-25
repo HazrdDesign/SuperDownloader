@@ -30,7 +30,7 @@ from yt_dlp.utils import DownloadCancelled
 
 from . import paths
 from .browsers import NONE_SOURCE, LoginSource
-from .errors import ErrorInfo, Status, classify_error, ready
+from .errors import ErrorInfo, Status, classify_error, login_attempts_failed, ready
 
 log = logging.getLogger(__name__)
 
@@ -264,8 +264,9 @@ class CheckRequest:
     login: LoginSource = NONE_SOURCE
     password: str | None = None
     referer: str | None = None
-    # If the site says it needs a login and no login was used, retry once with this one.
-    fallback_login: LoginSource | None = None
+    # If ``login`` doesn't work (the site asks for a login, or the browser's login can't be
+    # read), these are tried in order. NONE_SOURCE in the list means "try without a login".
+    fallback_logins: tuple[LoginSource, ...] = ()
 
 
 @dataclass
@@ -277,7 +278,13 @@ class CheckResult:
     playlist: PlaylistInfo | None = None
     subtitles: list[SubtitleChoice] = field(default_factory=list)
     has_video: bool = True
-    used_login: bool = False     # the check only worked with the browser login
+    login: LoginSource = NONE_SOURCE       # the browser login that worked (download with this one)
+    # (login key, result) for each login tried that didn't work, in order.
+    failed_logins: tuple[tuple[str, Status], ...] = ()
+
+    @property
+    def used_login(self) -> bool:
+        return not self.login.is_none
 
     @property
     def ok(self) -> bool:
@@ -641,10 +648,45 @@ def put_bundled_tools_on_path() -> None:
         os.environ["PATH"] = str(ff) + os.pathsep + current
 
 
+def register_extra_browsers() -> None:
+    """Teach yt-dlp to read Arc's logins.
+
+    Arc is a Chromium browser that yt-dlp doesn't know by name. Reading it works like Chrome;
+    only the folder and (on a Mac) the Keychain entry differ. This hooks into yt-dlp's
+    per-browser settings; if a future engine changes them, Arc is simply skipped and the
+    other browsers are tried.
+    """
+    try:
+        from yt_dlp import cookies as ydl_cookies
+        if "arc" in ydl_cookies.SUPPORTED_BROWSERS:
+            return
+        original = ydl_cookies._get_chromium_based_browser_settings
+
+        def settings(browser_name):
+            if browser_name != "arc":
+                return original(browser_name)
+            from .browsers import detect_chromium
+            arc = next((s for s in detect_chromium() if s.ydl_browser == "arc"), None)
+            folder = Path(arc.profile).parent if arc and arc.profile else Path()
+            return {"browser_dir": str(folder), "keyring_name": "Arc", "supports_profiles": True}
+
+        ydl_cookies._get_chromium_based_browser_settings = settings
+        ydl_cookies.CHROMIUM_BASED_BROWSERS.add("arc")
+        ydl_cookies.SUPPORTED_BROWSERS.add("arc")
+    except Exception as e:  # noqa: BLE001 - Arc support is optional
+        log.warning("Arc logins can't be read with this engine version: %s", e)
+
+
+# Results that mean "this login didn't work": try the next browser.
+LOGIN_RETRY_STATES = frozenset({Status.NEEDS_LOGIN, Status.COOKIES_LOCKED, Status.COOKIES_UNREADABLE,
+                                Status.COOKIES_MISSING})
+
+
 class Engine:
     def __init__(self) -> None:
         self._cancel = threading.Event()
         put_bundled_tools_on_path()
+        register_extra_browsers()
 
     # -- options ---------------------------------------------------------------------------
 
@@ -697,17 +739,38 @@ class Engine:
 
     # -- check -----------------------------------------------------------------------------
 
-    def check_link(self, req: CheckRequest) -> CheckResult:
+    def check_link(self, req: CheckRequest,
+                   on_attempt: Callable[[LoginSource], None] | None = None) -> CheckResult:
+        """Check a link, trying each browser login in turn until one works.
+
+        ``on_attempt`` is called (from this thread) before each retry with the login about to be
+        tried, so the UI can say "Trying your login from Chrome…".
+        """
         with _WARM_LOCK:
             pass  # wait for a running warm-up to finish
-        res = self._check_once(req)
-        fallback = req.fallback_login
-        if (res.result.status is Status.NEEDS_LOGIN and req.login.is_none
-                and fallback is not None and not fallback.is_none):
-            log.info("Site asked for a login; retrying with the browser login (%s)", fallback.app_name)
-            retry = self._check_once(dataclasses.replace(req, login=fallback, fallback_login=None))
-            retry.used_login = True
-            return retry
+        order: list[LoginSource] = []
+        for login in (req.login, *req.fallback_logins):
+            if all(login.key != o.key for o in order):
+                order.append(login)
+        attempts: list[tuple[LoginSource, ErrorInfo]] = []
+        res = CheckResult(classify_error("No login worked"))
+        for i, login in enumerate(order):
+            if i and on_attempt is not None:
+                on_attempt(login)
+            if i:
+                log.info("Trying the next login: %s", "none" if login.is_none else login.app_name)
+            res = self._check_once(dataclasses.replace(req, login=login, fallback_logins=()))
+            if res.ok or res.result.status not in LOGIN_RETRY_STATES:
+                res.login = login if res.ok else NONE_SOURCE
+                res.failed_logins = tuple((a.key, info.status) for a, info in attempts)
+                return res
+            attempts.append((login, res.result))
+            log.info("Login %s didn't work: %s", "none" if login.is_none else login.app_name,
+                     res.result.status.value)
+        if len(attempts) > 1:
+            res.result = login_attempts_failed([(a.app_name if not a.is_none else None, info)
+                                                for a, info in attempts])
+        res.failed_logins = tuple((a.key, info.status) for a, info in attempts)
         return res
 
     def _check_once(self, req: CheckRequest) -> CheckResult:

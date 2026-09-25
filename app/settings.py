@@ -20,6 +20,7 @@ QUALITY_LABELS = {
     "1080": "1080p",
     "720": "720p",
 }
+MAX_SITE_LOGINS = 100
 MAX_RECENT_PROJECTS = 8
 
 
@@ -30,9 +31,11 @@ class Settings:
     save_folder: str = ""
     default_quality: str = "best"
     default_format: str = "original"   # an engine.FORMATS key
-    # Browser login used when a site asks for one: "auto" (the most recently used Firefox,
-    # Zen, LibreWolf or Floorp profile), "none", or a key from browsers.py.
+    # Browser login used when a site asks for one: "auto" (try each browser, most recently
+    # used first), "none", or a key from browsers.py (only that browser).
     login_source: str = "auto"
+    # Which browser's login worked for each site ("vimeo.com" -> "chrome"); tried first next time.
+    site_logins: dict = dataclasses.field(default_factory=dict)
     check_updates_on_launch: bool = True
     use_copied_links: bool = True      # fill in a video link you just copied when the app gets focus
     notify_when_done: bool = True      # flash the taskbar and play a sound when a download finishes
@@ -67,7 +70,18 @@ def _coerce(data: dict) -> Settings:
         # Version 1 saved "none" by default; version 2 picks the browser automatically.
         s.login_source = "auto"
     s.recent_projects = [p for p in s.recent_projects if isinstance(p, str) and p.strip()][:MAX_RECENT_PROJECTS]
+    s.site_logins = {k: v for k, v in s.site_logins.items() if isinstance(k, str) and isinstance(v, str)}
     return s
+
+
+def remember_site_login(settings: Settings, site: str, key: str) -> bool:
+    """Remember that ``key``'s login worked for ``site``. Returns True if anything changed."""
+    if not site or settings.site_logins.get(site) == key:
+        return False
+    logins = {k: v for k, v in settings.site_logins.items() if k != site}
+    logins[site] = key
+    settings.site_logins = dict(list(logins.items())[-MAX_SITE_LOGINS:])
+    return True
 
 
 def remember_project(settings: Settings, project: str) -> None:

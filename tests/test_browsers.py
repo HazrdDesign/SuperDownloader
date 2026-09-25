@@ -1,6 +1,9 @@
 import os
+import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from app import browsers
 from app.browsers import NONE_SOURCE, LoginSource
@@ -94,20 +97,114 @@ def test_broken_profiles_ini_is_ignored(tmp_path):
     assert src.label == "Zen — Default (release)"
 
 
-def test_chromium_detected_with_note(tmp_path):
+def make_chromium(user_data: Path, profile: str = "Default", mtime: float | None = None,
+                  network: bool = True) -> Path:
+    folder = user_data / profile
+    db = folder / "Network" / "Cookies" if network else folder / "Cookies"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    db.write_bytes(b"SQLite format 3\x00")
+    if mtime is not None:
+        os.utime(db, (mtime, mtime))
+    return folder
+
+
+def test_chromium_detected_on_windows_with_note(tmp_path):
     local = tmp_path / "Local"
-    (local / "Google" / "Chrome" / "User Data").mkdir(parents=True)
-    (local / "Microsoft" / "Edge" / "User Data").mkdir(parents=True)
+    make_chromium(local / "Google" / "Chrome" / "User Data")
+    make_chromium(local / "Microsoft" / "Edge" / "User Data")
+    (local / "BraveSoftware" / "Brave-Browser" / "User Data").mkdir(parents=True)  # installed, never used
     found = browsers.detect_chromium(localappdata=local)
     assert [s.ydl_browser for s in found] == ["chrome", "edge"]
-    assert all(s.is_chromium and "Windows encryption" in s.note for s in found)
-    assert found[0].cookiesfrombrowser() == ("chrome", None, None, None)
+    assert all(s.is_chromium and "Windows encryption" in s.note and "(may not work)" in s.label for s in found)
+    # The profile folder is passed so yt-dlp doesn't search the whole user-data folder.
+    profile = str(local / "Google" / "Chrome" / "User Data" / "Default")
+    assert found[0].cookiesfrombrowser() == ("chrome", profile, None, None)
+
+
+def test_chromium_newest_profile_is_used(tmp_path):
+    local = tmp_path / "Local"
+    ud = local / "Google" / "Chrome" / "User Data"
+    now = time.time()
+    make_chromium(ud, "Default", now - 1000)
+    make_chromium(ud, "Profile 2", now - 5, network=False)
+    [chrome] = browsers.detect_chromium(localappdata=local)
+    assert chrome.profile == str(ud / "Profile 2")
+    assert abs(chrome.mtime - (now - 5)) < 1
+
+
+def test_arc_found_on_windows(tmp_path):
+    local = tmp_path / "Local"
+    make_chromium(local / "Packages" / "TheBrowserCompany.Arc_ttt1ap7aakyb4" / "LocalCache" / "Local" / "Arc"
+                  / "User Data")
+    [arc] = browsers.detect_chromium(localappdata=local)
+    assert (arc.key, arc.app_name, arc.ydl_browser) == ("arc", "Arc", "arc")
+
+
+def test_mac_browsers(tmp_path):
+    """On a Mac: Chrome, Arc and Safari, with no Windows note (their logins can be read there)."""
+    base = tmp_path / "Library" / "Application Support"
+    make_chromium(base / "Google" / "Chrome", network=False)
+    make_chromium(base / "Arc" / "User Data")
+    found = browsers.detect_chromium(home=tmp_path, platform="darwin")
+    assert [(s.app_name, s.label, s.note) for s in found] == [("Chrome", "Chrome", ""), ("Arc", "Arc", "")]
+    [safari] = browsers.detect_safari(tmp_path, platform="darwin")
+    assert safari.ydl_browser == "safari" and safari.mtime == 0  # unknown until Full Disk Access
+    cookies = tmp_path / browsers.SAFARI_COOKIES[0]
+    cookies.parent.mkdir(parents=True)
+    cookies.write_bytes(b"cook")
+    assert browsers.detect_safari(tmp_path, platform="darwin")[0].mtime > 0
+    assert browsers.detect_safari(tmp_path, platform="win32") == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Mac/Linux folder layout")
+def test_mac_firefox_family(tmp_path):
+    make_profile(tmp_path / "Library" / "Application Support" / "zen", "x.Default")
+    [zen] = browsers.detect_firefox_profiles(home=tmp_path)
+    assert zen.app_name == "Zen"
+
+
+def src(key, mtime, browser="firefox", name=None):
+    return LoginSource(key, key, name or key.title(), browser, None, mtime)
+
+
+def test_candidates_most_recent_first(monkeypatch):
+    monkeypatch.setattr(browsers.sys, "platform", "darwin")
+    now = 1_000_000_000.0
+    zen, chrome, arc = src("zen", now - 50), src("chrome", now - 10, "chrome"), src("arc", now - 20, "arc")
+    safari = src("safari", 0, "safari")
+    order = browsers.candidates([NONE_SOURCE, zen, chrome, arc, safari], now=now)
+    assert [s.key for s in order] == ["chrome", "arc", "zen", "safari"]  # unknown age last
+    # The browser that worked for this site before goes first.
+    assert browsers.candidates([zen, chrome, arc], "zen", now=now)[0] == zen
+    # Known-unreadable ones go last.
+    assert [s.key for s in browsers.candidates([zen, chrome, arc], demote={"chrome"}, now=now)] == ["arc", "zen",
+                                                                                                    "chrome"]
+    assert browsers.automatic([NONE_SOURCE, zen, chrome]) == chrome
+    assert browsers.automatic([NONE_SOURCE]) is NONE_SOURCE
+
+
+def test_candidates_skip_unused_browsers_and_cap(monkeypatch):
+    monkeypatch.setattr(browsers.sys, "platform", "darwin")
+    now = 1_000_000_000.0
+    old = src("opera", now - browsers.STALE_AFTER - 1, "opera")
+    fresh = src("chrome", now - 5, "chrome")
+    assert browsers.candidates([old, fresh], now=now) == [fresh]
+    assert browsers.candidates([old], now=now) == [old]  # nothing else: still try it
+    many = [src(f"p{i}", now - i) for i in range(10)]
+    assert len(browsers.candidates(many, now=now)) == browsers.MAX_LOGIN_TRIES
+
+
+def test_candidates_on_windows_try_chrome_based_last(monkeypatch):
+    monkeypatch.setattr(browsers.sys, "platform", "win32")
+    now = 1_000_000_000.0
+    zen, chrome = src("zen", now - 500), src("chrome", now - 1, "chrome")
+    assert browsers.candidates([chrome, zen], now=now) == [zen, chrome]
 
 
 def test_all_sources_order(tmp_path):
     appdata, local = tmp_path / "Roaming", tmp_path / "Local"
     make_profile(appdata / "zen", "a.Default (release)")
-    (local / "BraveSoftware" / "Brave-Browser" / "User Data").mkdir(parents=True)
+    make_chromium(local / "BraveSoftware" / "Brave-Browser" / "User Data")
     srcs = browsers.all_sources(appdata=appdata, localappdata=local)
     assert srcs[0] is NONE_SOURCE
     assert srcs[1].app_name == "Zen"

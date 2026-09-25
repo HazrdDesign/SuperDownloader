@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import enum
 import re
+import sys
 from dataclasses import dataclass
 
 
@@ -22,7 +23,7 @@ class Status(enum.Enum):
     NEEDS_PASSWORD = "needs_password"
     EMBED_RESTRICTED = "embed_restricted"
     COOKIES_LOCKED = "cookies_locked"          # browser holds its cookie database / login looks stale
-    COOKIES_UNREADABLE = "cookies_unreadable"  # Chrome/Edge/Brave encryption blocked the read
+    COOKIES_UNREADABLE = "cookies_unreadable"  # encryption or privacy settings blocked the read
     COOKIES_MISSING = "cookies_missing"        # no cookie database in the chosen browser/profile
     DRM = "drm"
     INVALID_URL = "invalid_url"
@@ -72,10 +73,22 @@ class ErrorInfo:
 
 
 FIREFOX_FAMILY_HINT = "Firefox, Zen, LibreWolf or Floorp"
-LOGIN_HELP = (
-    f"This video is private or members-only. Log into the site in your browser ({FIREFOX_FAMILY_HINT}), "
-    "then click Retry."
-)
+
+
+def _on_windows() -> bool:
+    return sys.platform == "win32"
+
+
+def _in_your_browser() -> str:
+    # On Windows only Firefox-family logins can be read, so say which browsers work.
+    return f"in your browser ({FIREFOX_FAMILY_HINT})" if _on_windows() else "in your browser"
+
+
+def _join(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+LOGIN_HELP = "This video is private or members-only. Log into the site {where}, then click Retry."
 
 MESSAGES = {
     Status.NEEDS_LOGIN: LOGIN_HELP,
@@ -89,10 +102,8 @@ MESSAGES = {
     Status.COOKIES_LOCKED: (
         "Couldn't read your login from {browser}. Close {browser} completely, then click Retry."
     ),
-    Status.COOKIES_UNREADABLE: (
-        "Windows security usually blocks reading logins from {browser}. For private videos, log in "
-        f"with {FIREFOX_FAMILY_HINT} and choose it in Settings under 'Browser for logins'."
-    ),
+    Status.COOKIES_UNREADABLE: "Couldn't read your login from {browser}. Log into the site in another browser, "
+                               "then click Retry.",
     Status.COOKIES_MISSING: (
         "Couldn't find a saved login in {browser}. Open it, log into the site, then click Retry."
     ),
@@ -152,6 +163,14 @@ _RULES: list[tuple[Status, tuple[str, ...]]] = [
         r"could not find \w+ cookies database",
         r"could not find .* cookies",
         r"custom safari cookies database not found",
+    )),
+    # Anything else that went wrong while reading a browser's login (macOS privacy
+    # protection for Safari, an engine that doesn't know the browser...).
+    (Status.COOKIES_UNREADABLE, (
+        r"operation not permitted.*cookies",
+        r"failed to load cookies",
+        r"unsupported browser",
+        r"unknown browser",
     )),
     (Status.NEEDS_PASSWORD, (
         r"video-password",
@@ -384,12 +403,12 @@ def _message_for(status: Status, browser: str | None, password_given: bool,
                     f"{browser}, close {browser} completely, then click Retry.")
         if ("confirm you" in low and "bot" in low) or "only works when logged-in" in low:
             # The site asks for a login even for public videos (bot checks, some networks).
-            return (f"The site wants you to sign in first. Log into it in your browser ({FIREFOX_FAMILY_HINT}), "
-                    "then click Retry.")
+            return f"The site wants you to sign in first. Log into it {_in_your_browser()}, then click Retry."
         if "confirm your age" in low or "age-restricted" in low or "age restricted" in low:
-            return (f"This video is age-restricted. Log into the site in your browser ({FIREFOX_FAMILY_HINT}), "
-                    "then click Retry.")
-        return MESSAGES[status]
+            return f"This video is age-restricted. Log into the site {_in_your_browser()}, then click Retry."
+        return LOGIN_HELP.format(where=_in_your_browser())
+    if status is Status.COOKIES_UNREADABLE:
+        return _unreadable_message(who)
     if status is Status.NEEDS_PASSWORD and password_given:
         return "That password didn't work. Check it and click Retry."
     if status is Status.EMBED_RESTRICTED and referer_given:
@@ -401,6 +420,65 @@ def _message_for(status: Status, browser: str | None, password_given: bool,
         if "live event has ended" in low:
             return "This live stream has ended and isn't available yet. Try again later."
     return MESSAGES[status].format(browser=who)
+
+
+def _unreadable_message(browser: str) -> str:
+    if _on_windows():
+        return (f"Windows blocks reading logins from {browser}. For private videos, log into the site with "
+                f"{FIREFOX_FAMILY_HINT}, then click Retry.")
+    if sys.platform == "darwin" and browser == "Safari":
+        return ("To use your Safari login, allow Super Downloader in System Settings → Privacy & Security → "
+                "Full Disk Access, then click Retry.")
+    if sys.platform == "darwin":
+        return (f"Couldn't read your login from {browser}. If your Mac asks to allow access to "
+                f"\"{browser} Safe Storage\", choose Always Allow, then click Retry.")
+    return MESSAGES[Status.COOKIES_UNREADABLE].format(browser=browser)
+
+
+def login_attempts_failed(attempts: list[tuple[str | None, ErrorInfo]]) -> ErrorInfo:
+    """One message for "we tried each browser's login and none worked".
+
+    ``attempts`` is (browser name, or None for "no login"; its result) in the order tried.
+    When only one browser was tried its own message is kept, since it's the most specific
+    ("Close Zen completely…").
+    """
+    browsers = [(name, info) for name, info in attempts if name]
+    detail = "\n\n".join(f"{name or 'Without a login'}: {info.status.value}\n{info.detail}".strip()
+                          for name, info in attempts)
+    if len(browsers) == 1:
+        info = browsers[0][1]
+        return ErrorInfo(info.status, info.message, detail)
+    if not browsers:
+        info = attempts[-1][1]
+        return ErrorInfo(info.status, info.message, detail)
+
+    def names(*statuses: Status) -> list[str]:
+        out: list[str] = []
+        for name, info in browsers:
+            if info.status in statuses and name not in out:
+                out.append(name)
+        return out
+
+    reached = names(Status.NEEDS_LOGIN)   # the login was read, but the site still said no
+    blocked = names(Status.COOKIES_UNREADABLE)
+    locked = names(Status.COOKIES_LOCKED)
+    missing = names(Status.COOKIES_MISSING)
+    parts = ["The site wants you to sign in first."]
+    if reached:
+        parts.append(f"Your {'login' if len(reached) == 1 else 'logins'} from {_join(reached)} didn't work for it.")
+    if blocked:
+        where = "Windows blocks" if _on_windows() else "Couldn't read"
+        parts.append(f"{where} {'the login' if len(blocked) == 1 else 'logins'} from {_join(blocked)}.")
+    if missing:
+        parts.append(f"There's no saved login in {_join(missing)}.")
+    if locked:
+        parts.append(f"Close {_join(locked)} completely so {'its' if len(locked) == 1 else 'their'} login can be read.")
+    if reached:
+        parts.append(f"Log into the site in {reached[0] if len(reached) == 1 else 'one of them'}, make sure the video "
+                     "plays, then click Retry.")
+    else:
+        parts.append(f"Log into the site {_in_your_browser()}, then click Retry.")
+    return ErrorInfo(Status.NEEDS_LOGIN, " ".join(parts), detail)
 
 
 def ready() -> ErrorInfo:

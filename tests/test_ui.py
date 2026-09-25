@@ -16,6 +16,7 @@ from app.browsers import NONE_SOURCE, LoginSource
 from app.engine import (
     FORMATS_BY_KEY,
     CheckResult,
+    Engine,
     DownloadResult,
     PlaylistInfo,
     Progress,
@@ -66,22 +67,23 @@ class FakeEngine:
     def cancel(self):
         self._cancel.set()
 
-    def check_link(self, req):
+    def check_link(self, req, on_attempt=None):
         self.requests.append(req)
         time.sleep(self.delay)
-        res = self._check(req)
-        if res.result.status is Status.NEEDS_LOGIN and req.login.is_none and req.fallback_login:
-            import dataclasses
-            res = self._check(dataclasses.replace(req, login=req.fallback_login))
-            res.used_login = True
-        return res
+        return Engine.check_link(self, req, on_attempt)  # the real try-each-browser logic
+
+    def _check_once(self, req):
+        return self._check(req)
 
     def _check(self, req):
         url = normalize_url(req.url)
         if not url:
             return CheckResult(classify_error(f"{req.url!r} is not a valid URL"))
-        if "login" in url and req.login.is_none:
-            return CheckResult(classify_error("This video is only available for registered users"))
+        if req.login.ydl_browser == "chrome":  # like Chrome on Windows: its login can't be read
+            return CheckResult(classify_error("Failed to decrypt with DPAPI", browser=req.login.app_name))
+        if "login" in url and (req.login.is_none or req.login.profile == "/signed-out"):
+            return CheckResult(classify_error("This video is only available for registered users",
+                                              browser=req.login.app_name))
         if "password" in url and req.password != "secret":
             msg = "Wrong video password" if req.password else "protected by a password, use the --video-password option"
             return CheckResult(classify_error(msg, password_given=bool(req.password)))
@@ -257,16 +259,52 @@ def test_stale_check_result_is_ignored(make_app):
 # ---- login: one checkbox, automatic browser, automatic retry -------------------------------------
 
 def test_login_is_retried_automatically_with_the_browser(make_app):
-    """Needs-login sites just work: the app retries with the auto-detected browser by itself."""
+    """Needs-login sites just work: the app retries with each browser by itself."""
     eng = FakeEngine()
     app = make_app(eng)
-    assert app.login_source == ZEN  # "auto" picks the Firefox-family profile, never Chrome
+    assert app.login_candidates()[0] == ZEN
     check(app, "https://example.com/login-private")
     pump(app, 0.2)
     assert app.banner_status is Status.READY
-    assert eng.requests[-1].fallback_login == ZEN
+    assert eng.requests[-1].login == NONE_SOURCE and eng.requests[-1].fallback_logins == (ZEN, CHROME)
+    assert app.result.login == ZEN
     assert visible(app, "login") and app.use_login_var.get()
-    assert app.login_check.cget("text").startswith("Log in with Zen")
+    assert app.login_check.cget("text") == "Log in with my browser (for private or password-protected videos)"
+    assert app.login_note.cget("text") == "Using your login from Zen."
+
+
+def test_each_browser_is_tried_until_one_works_and_remembered(make_app, tmp_path):
+    """The most recently used browser isn't logged in; the next one is. Next time it goes first."""
+    now = time.time()
+    firefox = LoginSource("firefox:/signed-out", "Firefox — default", "Firefox", "firefox", "/signed-out", now)
+    zen = LoginSource("firefox:/zen", "Zen — Default (release)", "Zen", "firefox", "/zen", now - 3600)
+    eng = FakeEngine()
+    app = make_app(eng, sources=[NONE_SOURCE, firefox, zen])
+    assert app.login_candidates() == [firefox, zen]
+    check(app, "https://www.example.com/login-private")
+    pump(app, 0.2)
+    assert app.banner_status is Status.READY and app.result.login == zen
+    assert app.spinner_label.cget("text") == "Trying your login from Zen…"
+    assert app.saved_settings[-1].site_logins == {"example.com": zen.key}
+    assert app.login_candidates("https://player.example.com/x") == [zen, firefox]
+    # The download uses the login that worked.
+    app.start_download()
+    finish(app, 10)
+    assert eng.jobs[-1].login == zen
+
+
+def test_none_of_the_browsers_worked(make_app):
+    now = time.time()
+    a = LoginSource("firefox:/signed-out", "Firefox — default", "Firefox", "firefox", "/signed-out", now)
+    eng = FakeEngine()
+    app = make_app(eng, sources=[NONE_SOURCE, a, CHROME])
+    check(app, "https://example.com/login-private")
+    pump(app, 0.2)
+    assert app.banner_status is Status.NEEDS_LOGIN
+    text = app.banner_text.cget("text")
+    assert "Firefox didn't work" in text and "Chrome" in text
+    assert app.login_retry.winfo_ismapped()
+    assert CHROME.key in app._unreadable_logins  # tried last from now on
 
 
 def test_vimeo_link_shows_the_single_login_option_checked(make_app):
@@ -277,34 +315,45 @@ def test_vimeo_link_shows_the_single_login_option_checked(make_app):
     assert visible(app, "login")
     assert app.use_login_var.get()
     assert eng.requests[-1].login == ZEN
+    assert eng.requests[-1].fallback_logins == (CHROME, NONE_SOURCE)  # then without a login
+    assert app.login_check.cget("text") == "Log in with my browser (for private or password-protected videos)"
+
+
+def test_single_browser_is_named(make_app):
+    app = make_app(sources=[NONE_SOURCE, ZEN])
+    check(app, "https://vimeo.com/123")
+    pump(app, 0.2)
     assert "Log in with Zen (for private or password-protected videos)" == app.login_check.cget("text")
 
 
-def test_never_use_login_setting_then_tick_the_box_and_retry(make_app, tmp_path):
+def test_never_use_login_setting(make_app, tmp_path):
     eng = FakeEngine()
     app = make_app(eng, settings=Settings(save_folder=str(tmp_path / "out"), login_source="none"))
-    assert app.login_source == NONE_SOURCE
+    assert app.login_candidates() == []
     check(app, "https://example.com/login-private")
     pump(app, 0.2)
     assert app.banner_status is Status.NEEDS_LOGIN
+    assert eng.requests[-1].fallback_logins == ()
     assert visible(app, "login")
-    assert "Firefox, Zen, LibreWolf or Floorp" in app.login_note.cget("text")
+    assert "Browser logins are turned off" in app.login_note.cget("text")
 
 
-def test_login_checkbox_and_retry_when_auto_is_off_for_this_link(make_app):
-    eng = FakeEngine()
-    app = make_app(eng)
-    app.settings.login_source = "none"  # no automatic retry...
-    app.login_source = ZEN              # ...but the browser is still known
+def test_no_browser_found(make_app):
+    app = make_app(sources=[NONE_SOURCE, NONE_SOURCE])
     check(app, "https://example.com/login-private")
     pump(app, 0.2)
     assert app.banner_status is Status.NEEDS_LOGIN
-    assert visible(app, "login") and app.login_retry.winfo_ismapped()
-    app.use_login_var.set(True)
-    app.login_retry.invoke()
-    assert pump(app, 3, lambda: app.stage == "checked")
+    assert "log into the site in your browser" in app.login_note.cget("text")
+
+
+def test_one_browser_chosen_in_settings_is_the_only_one_tried(make_app, tmp_path):
+    eng = FakeEngine()
+    app = make_app(eng, settings=Settings(save_folder=str(tmp_path / "out"), login_source=ZEN.key))
+    check(app, "https://example.com/login-private")
+    pump(app, 0.2)
     assert app.banner_status is Status.READY
-    assert eng.requests[-1].login == ZEN
+    assert eng.requests[-1].fallback_logins == (ZEN,)
+    assert app.saved_settings == []  # nothing to remember: there's only one browser
 
 
 def test_chrome_in_settings_shows_encryption_note(make_app, tmp_path):
@@ -721,7 +770,7 @@ def test_settings_window_saves_and_updates_main(make_app, tmp_path):
     assert saved.default_format == "prores"
     assert saved.login_source == CHROME.key
     assert saved.check_updates_on_launch is False and saved.use_copied_links is False
-    assert app.login_source == CHROME
+    assert app.login_candidates() == [CHROME]
 
 
 def test_settings_login_choices(make_app):
@@ -730,13 +779,13 @@ def test_settings_login_choices(make_app):
     pump(app, 0.3)
     win = app._settings_win
     values = win.login_menu.cget("values")
-    assert values[0] == "Automatic (Zen — Default (release))"
+    assert values[0] == "Automatic: try each browser (Zen, Chrome)"
     assert values[-1] == "Never use a browser login"
     win._on_login_selected("Never use a browser login")
     win.save()
     pump(app, 0.2)
     assert app.saved_settings[-1].login_source == "none"
-    assert app.login_source == NONE_SOURCE
+    assert app.login_candidates() == []
 
 
 def test_settings_rejects_missing_folder(make_app, tmp_path):
@@ -800,7 +849,7 @@ def _png_bytes(color=(200, 30, 30)) -> bytes:
 
 
 class ThumbEngine(FakeEngine):
-    def check_link(self, req):
+    def check_link(self, req, on_attempt=None):
         res = super().check_link(req)
         if res.video:
             res.video.thumbnail = "https://example.invalid/thumb.png"

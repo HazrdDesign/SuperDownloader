@@ -46,7 +46,7 @@ from .engine import (
     project_prefix,
     safe_folder_name,
 )
-from .errors import ErrorInfo, Severity, Status
+from .errors import FIREFOX_FAMILY_HINT, ErrorInfo, Severity, Status
 from .history import History, HistoryEntry
 from .jobs import JobQueue, QueuedJob
 from .settings import Settings
@@ -93,6 +93,13 @@ def _is_login_host(url: str | None) -> bool:
     return any(host == h or host.endswith("." + h) for h in LOGIN_HOSTS)
 
 
+def _site(url: str | None) -> str:
+    """"vimeo.com" for https://player.vimeo.com/...: the key for remembering a site's login."""
+    host = (urlparse(url or "").hostname or "").lower()
+    parts = host.split(".")
+    return ".".join(parts[-2:]) if len(parts) > 2 else host
+
+
 class MainWindow(ctk.CTk, _DnDBase):
     def __init__(self, settings: Settings, engine: Engine | None = None, *,
                  login_sources: list[LoginSource] | None = None, check_updates: bool | None = None,
@@ -128,7 +135,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.banner_status: Status | None = None
 
         self.login_sources = login_sources if login_sources is not None else browsers.all_sources()
-        self.login_source = browsers.resolve(settings.login_source, self.login_sources)
+        self._unreadable_logins: set[str] = set()  # browsers whose login couldn't be read this session
 
         self.title(APP_TITLE)
         set_window_icon(self)
@@ -200,7 +207,8 @@ class MainWindow(ctk.CTk, _DnDBase):
         # -- spinner ------------------------------------------------------------------------
         spinner = self._section("spinner")
         spinner.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(spinner, text="Checking link…", text_color=MUTED).grid(row=0, column=0, padx=(0, 10))
+        self.spinner_label = ctk.CTkLabel(spinner, text="Checking link…", text_color=MUTED)
+        self.spinner_label.grid(row=0, column=0, padx=(0, 10))
         self.spinner_bar = ctk.CTkProgressBar(spinner, mode="indeterminate", height=6)
         self.spinner_bar.grid(row=0, column=1, sticky="ew")
 
@@ -519,16 +527,34 @@ class MainWindow(ctk.CTk, _DnDBase):
     def retry(self) -> None:
         self.start_check()
 
+    def login_candidates(self, url: str | None = None) -> list[LoginSource]:
+        """The browser logins to try for ``url``, in order (empty if logins are off or none found)."""
+        key = self.settings.login_source
+        if key == browsers.NONE_KEY:
+            return []
+        if key and key != browsers.AUTO_KEY:
+            src = browsers.from_key(key, self.login_sources)
+            return [] if src.is_none else [src]
+        url = url if url is not None else (self._checked_url or normalize_url(self.url_var.get()))
+        return browsers.candidates(self.login_sources, self.settings.site_logins.get(_site(url)),
+                                   demote=self._unreadable_logins)
+
     def _check_request(self, text: str) -> CheckRequest:
-        has_login = not self.login_source.is_none
-        use = self.use_login_var.get() and has_login
-        auto = has_login and self.settings.login_source != "none"
+        cands = self.login_candidates(normalize_url(text))
+        if not cands:
+            first, rest = browsers.NONE_SOURCE, ()
+        elif self.use_login_var.get():
+            # Try each browser, then (if none can be read) without a login.
+            first, rest = cands[0], (*cands[1:], browsers.NONE_SOURCE)
+        else:
+            # Try without a login; if the site asks for one, try each browser.
+            first, rest = browsers.NONE_SOURCE, tuple(cands)
         return CheckRequest(
             url=text,
-            login=self.login_source if use else browsers.NONE_SOURCE,
+            login=first,
             password=self.password_var.get() if "password" in self._visible and self.password_var.get() else None,
             referer=self.referer_var.get().strip() if "referer" in self._visible and self.referer_var.get().strip() else None,
-            fallback_login=self.login_source if auto and not use else None,
+            fallback_logins=rest,
         )
 
     def start_check(self) -> None:
@@ -544,7 +570,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         self._token += 1
         token = self._token
         new_url = normalize_url(text)
-        if new_url != self._checked_url and _is_login_host(new_url) and not self.login_source.is_none:
+        if new_url != self._checked_url and _is_login_host(new_url) and self.login_candidates(new_url):
             self.use_login_var.set(True)  # Vimeo: use the browser login up front
         self._checked_url = new_url
         req = self._check_request(text)
@@ -553,14 +579,18 @@ class MainWindow(ctk.CTk, _DnDBase):
             keep.add("login")
         self._clear_result()
         self.stage = "checking"
+        self.spinner_label.configure(text="Checking link…")
         self._only("spinner", *keep)
         self._update_login_row()
         self._relayout()
         host = urlparse(self._checked_url or "").hostname or "?"
         log.info("Check started for %s", host)
 
+        def on_attempt(src: LoginSource) -> None:
+            self.events.put(("check_attempt", token, src))
+
         def work():
-            res = self.engine.check_link(req)
+            res = self.engine.check_link(req, on_attempt=on_attempt)
             self.events.put(("check", token, res))
             if res.ok and res.video and res.video.thumbnail:
                 self.events.put(("thumb", token, fetch_thumbnail(res.video.thumbnail)))
@@ -580,6 +610,7 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.stage = "checked"
         self.result = res
         keep = {n for n in ("password", "referer") if n in self._visible}
+        self._learn_from_logins(res)
         if res.used_login:
             self.use_login_var.set(True)
         if res.used_login or _is_login_host(res.url or self._checked_url) or self.use_login_var.get():
@@ -641,7 +672,20 @@ class MainWindow(ctk.CTk, _DnDBase):
         self._relayout()
         log.info("Check result: ready (%d quality options%s%s)", len(res.qualities),
                  f", playlist of {res.playlist.count}" if res.playlist else "",
-                 ", with browser login" if res.used_login else "")
+                 f", with the login from {res.login.app_name}" if res.used_login else "")
+
+    def _learn_from_logins(self, res: CheckResult) -> None:
+        """Remember which browser worked for this site, and which ones can't be read."""
+        for key, status in res.failed_logins:
+            if status is Status.COOKIES_UNREADABLE:
+                self._unreadable_logins.add(key)  # try it last from now on
+        if res.ok and res.used_login and self.settings.login_source == browsers.AUTO_KEY:
+            self._unreadable_logins.discard(res.login.key)
+            if settings_mod.remember_site_login(self.settings, _site(res.url or self._checked_url), res.login.key):
+                try:
+                    self._save_settings(self.settings)
+                except OSError as e:
+                    log.warning("Could not save the login used for this site: %s", e)
 
     def _reveal_for(self, status: Status) -> None:
         if status in LOGIN_STATES:
@@ -687,17 +731,28 @@ class MainWindow(ctk.CTk, _DnDBase):
     # ======================================================================================
 
     def _update_login_row(self) -> None:
-        src = self.login_source
-        if src.is_none:
+        cands = self.login_candidates()
+        note = ""
+        if not cands:
             self.login_check.grid_remove()
-            self.login_note.configure(text="To download private or password-protected videos, log into the "
-                                           "site with Firefox, Zen, LibreWolf or Floorp, then click Retry.")
-            self.login_note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-            return
-        self.login_check.configure(text=f"Log in with {src.app_name} (for private or password-protected videos)")
-        self.login_check.grid()
-        if src.note:
-            self.login_note.configure(text=src.note)
+            if self.settings.login_source == browsers.NONE_KEY:
+                note = "Browser logins are turned off. To use them, open Settings → Browser for logins."
+            else:
+                hint = f" ({FIREFOX_FAMILY_HINT})" if sys.platform == "win32" else ""
+                note = (f"To download private or password-protected videos, log into the site in your "
+                        f"browser{hint}, then click Retry.")
+        else:
+            names = list(dict.fromkeys(s.app_name for s in cands if s.app_name))
+            who = names[0] if len(names) == 1 else "my browser"
+            self.login_check.configure(text=f"Log in with {who} (for private or password-protected videos)")
+            self.login_check.grid()
+            res = self.result
+            if res is not None and res.ok and res.used_login:
+                note = f"Using your login from {res.login.app_name}."
+            elif len(cands) == 1 and cands[0].note:
+                note = cands[0].note
+        if note:
+            self.login_note.configure(text=note)
             self.login_note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         else:
             self.login_note.grid_remove()
@@ -823,13 +878,13 @@ class MainWindow(ctk.CTk, _DnDBase):
         elif res.playlist and res.playlist.pure:
             urls = res.playlist.entry_urls[:1]
 
-        use_login = (self.use_login_var.get() or res.used_login) and not self.login_source.is_none
+        use_login = res.used_login  # the login that worked during the check (if one was needed)
         subs = self._selected_subtitles()
         job = DownloadJob(
             urls=[u for u in urls if u],
             quality=quality,
             folder=folder,
-            login=self.login_source if use_login else browsers.NONE_SOURCE,
+            login=res.login,
             password=self.password_var.get() if "password" in self._visible and self.password_var.get() else None,
             referer=self.referer_var.get().strip() if "referer" in self._visible and self.referer_var.get().strip() else None,
             fmt=fmt,
@@ -889,7 +944,8 @@ class MainWindow(ctk.CTk, _DnDBase):
         quality = Quality(f"h{dq}", f"{dq}p", height=int(dq)) if dq.isdigit() else Quality("best", "Best available")
         project = self._project_text()
         for url in urls:
-            login = self.login_source if _is_login_host(url) else browsers.NONE_SOURCE
+            cands = self.login_candidates(url) if _is_login_host(url) else []
+            login = cands[0] if cands else browsers.NONE_SOURCE
             job = DownloadJob(urls=[url], quality=quality if fmt.uses_quality else None, folder=folder,
                               login=login, fmt=fmt, name_prefix=project_prefix(project))
             meta = {"url": url, "title": url, "quality_key": quality.key, "format_key": fmt.key,
@@ -1168,7 +1224,7 @@ class MainWindow(ctk.CTk, _DnDBase):
             self.referer_var.set(entry.referer)
             self._visible.add("referer")
         self.url_var.set(entry.url)
-        self.use_login_var.set(entry.used_login and not self.login_source.is_none)
+        self.use_login_var.set(entry.used_login and bool(self.login_candidates(normalize_url(entry.url))))
         self._checked_url = normalize_url(entry.url)  # keep start_check from resetting the login choice
         self.start_check()
 
@@ -1277,8 +1333,7 @@ class MainWindow(ctk.CTk, _DnDBase):
 
     def _on_settings_saved(self, new: Settings) -> None:
         self.settings = new
-        self.login_source = browsers.resolve(new.login_source, self.login_sources)
-        if self.login_source.is_none:
+        if not self.login_candidates():
             self.use_login_var.set(False)
         self._update_login_row()
         self._refresh_folder_label()
@@ -1313,6 +1368,9 @@ class MainWindow(ctk.CTk, _DnDBase):
                     continue
                 if kind == "check":
                     self._on_check_done(payload)
+                elif kind == "check_attempt":
+                    self.spinner_label.configure(text=f"Trying your login from {payload.app_name}…"
+                                                 if not payload.is_none else "Trying without a login…")
                 elif kind == "thumb":
                     self._on_thumbnail(payload)
                 elif kind in ("job_added", "job_started"):
@@ -1345,7 +1403,10 @@ class MainWindow(ctk.CTk, _DnDBase):
         self.bind("<Return>", self._on_enter)
         self.bind("<KP_Enter>", self._on_enter)
         self.bind("<Escape>", self._on_escape)
-        for seq in ("<Control-v>", "<Control-V>"):
+        paste_keys = ("<Control-v>", "<Control-V>")
+        if sys.platform == "darwin":
+            paste_keys += ("<Command-v>", "<Command-V>")  # ⌘V on a Mac
+        for seq in paste_keys:
             self.bind(seq, self._on_ctrl_v)
             self.url_entry.bind(seq, self._paste_into_url)
         self.url_entry.bind("<<Paste>>", self._paste_into_url)

@@ -6,6 +6,7 @@ import dataclasses
 import gc
 import logging
 import queue
+import sys
 import threading
 from pathlib import Path
 from tkinter import filedialog
@@ -50,8 +51,13 @@ class SettingsWindow(ctk.CTkToplevel):
         self._on_engine_updated = on_engine_updated
         self._save_settings = save_settings
         self._sources = [s for s in login_sources if not s.is_none]
-        auto = browsers.automatic(login_sources)
-        self._auto_label = f"Automatic ({auto.label})" if not auto.is_none else "Automatic (none found yet)"
+        names = list(dict.fromkeys(s.app_name for s in browsers.candidates(login_sources) if s.app_name))
+        if not names:
+            self._auto_label = "Automatic (no browsers found yet)"
+        elif len(names) == 1:
+            self._auto_label = f"Automatic ({names[0]})"
+        else:
+            self._auto_label = f"Automatic: try each browser ({', '.join(names)})"
         self._events: queue.Queue = queue.Queue()
         self._update_info: updater.UpdateInfo | None = None
         self._folder = settings.save_folder
@@ -228,6 +234,13 @@ class SettingsWindow(ctk.CTkToplevel):
     def _update_login_note(self) -> None:
         if self._login_key == browsers.NONE_KEY:
             _set_text(self.login_note, "Private videos won't download. Sites that ask for a login will show a message.")
+            return
+        if self._login_key in (None, "", browsers.AUTO_KEY):
+            blocked = sys.platform == "win32" and any(src.is_chromium for src in self._sources)
+            _set_text(self.login_note, "When a site needs a login, each browser is tried in turn, the one you used "
+                                       "most recently first."
+                                       + (" Chrome-based browsers go last: Windows usually blocks reading them."
+                                          if blocked else ""))
             return
         _set_text(self.login_note, self._selected_source().note)
 

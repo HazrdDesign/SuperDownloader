@@ -15,7 +15,8 @@ _FOLDERID_DOWNLOADS = "{374DE290-123F-4565-9164-39C4925E467B}"
 
 
 def app_data_dir() -> Path:
-    """``%APPDATA%\\SuperDownloader`` on Windows; an XDG-style folder elsewhere.
+    """``%APPDATA%\\SuperDownloader`` on Windows, ``~/Library/Application Support/SuperDownloader``
+    on a Mac, an XDG-style folder elsewhere.
 
     ``VD_APPDATA`` overrides the location (used by tests and CI).
     """
@@ -28,6 +29,8 @@ def app_data_dir() -> Path:
 def _roaming_root() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support"
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
 
 

@@ -11,7 +11,8 @@ from yt_dlp.utils import (
     UnsupportedError,
 )
 
-from app.errors import ErrorInfo, Severity, Status, classify_error, classify_text
+from app import errors
+from app.errors import ErrorInfo, Severity, Status, classify_error, classify_text, login_attempts_failed
 
 
 def wrap(exc: BaseException) -> DownloadError:
@@ -64,10 +65,25 @@ def test_needs_login(msg):
     assert "--cookies" not in info.message  # never leak yt-dlp jargon
 
 
-def test_needs_login_message_when_no_browser():
+@pytest.fixture
+def on_windows(monkeypatch):
+    monkeypatch.setattr(errors.sys, "platform", "win32")
+
+
+@pytest.fixture
+def on_mac(monkeypatch):
+    monkeypatch.setattr(errors.sys, "platform", "darwin")
+
+
+def test_needs_login_message_when_no_browser(on_windows):
     info = classify_error("This video is only available for registered users")
-    assert "Retry" in info.message and "Zen" in info.message
+    assert "Retry" in info.message and "Zen" in info.message  # on Windows only Firefox-family logins work
     assert "Use login from" not in info.message  # that dropdown no longer exists
+
+
+def test_needs_login_message_on_mac_names_no_browser(on_mac):
+    info = classify_error("This video is only available for registered users")
+    assert info.message == "This video is private or members-only. Log into the site in your browser, then click Retry."
 
 
 def test_needs_login_with_browser_selected_suggests_closing_browser():
@@ -192,12 +208,72 @@ def test_cookies_locked_from_sqlite_chain():
     assert "Close Firefox — default-release completely" in info.message
 
 
-def test_cookies_unreadable_chrome():
+def test_cookies_unreadable_chrome(on_windows):
     err = cookie_load_error(DownloadError(
         "Failed to decrypt with DPAPI. See  https://github.com/yt-dlp/yt-dlp/issues/10927  for more info"))
     info = classify_error(err, browser="Chrome")
     assert info.status is Status.COOKIES_UNREADABLE
-    assert "Chrome" in info.message and "Firefox" in info.message
+    assert "Windows blocks reading logins from Chrome" in info.message and "Firefox" in info.message
+
+
+def test_cookies_unreadable_on_mac(on_mac):
+    err = cookie_load_error(PermissionError(1, "Operation not permitted",
+                                            "/Users/a/Library/Cookies/Cookies.binarycookies"))
+    info = classify_error(err, browser="Safari")
+    assert info.status is Status.COOKIES_UNREADABLE
+    assert "Full Disk Access" in info.message
+    info = classify_error(cookie_load_error(ValueError("unknown browser: arc")), browser="Arc")
+    assert info.status is Status.COOKIES_UNREADABLE and "Always Allow" in info.message
+
+
+def test_specific_cookie_problems_beat_the_generic_one():
+    """"failed to load cookies" is in every cookie error; the specific cause still decides."""
+    locked = cookie_load_error(sqlite3.OperationalError("database is locked"))
+    assert classify_error(locked, browser="Zen").status is Status.COOKIES_LOCKED
+    missing = cookie_load_error(FileNotFoundError("could not find chrome cookies database in 'x'"))
+    assert classify_error(missing, browser="Chrome").status is Status.COOKIES_MISSING
+
+
+# ---- trying each browser: one message when none worked --------------------------------------
+
+def _needs_login(browser=None):
+    return classify_error("This video is only available for registered users", browser=browser)
+
+
+def _unreadable(browser):
+    return classify_error("Failed to decrypt with DPAPI", browser=browser)
+
+
+def test_all_browsers_failed_message(on_windows):
+    info = login_attempts_failed([(None, _needs_login()), ("Zen", _needs_login("Zen")),
+                                  ("Chrome", _unreadable("Chrome")), ("Edge", _unreadable("Edge"))])
+    assert info.status is Status.NEEDS_LOGIN
+    assert info.message == ("The site wants you to sign in first. Your login from Zen didn't work for it. "
+                            "Windows blocks logins from Chrome and Edge. Log into the site in Zen, make sure the "
+                            "video plays, then click Retry.")
+    assert "Without a login: needs_login" in info.detail and "Chrome: cookies_unreadable" in info.detail
+
+
+def test_only_chrome_on_windows(on_windows):
+    info = login_attempts_failed([(None, _needs_login()), ("Chrome", _unreadable("Chrome")),
+                                  ("Arc", _unreadable("Arc"))])
+    assert info.message == ("The site wants you to sign in first. Windows blocks logins from Chrome and Arc. "
+                            "Log into the site in your browser (Firefox, Zen, LibreWolf or Floorp), then click Retry.")
+
+
+def test_several_logins_tried_on_mac(on_mac):
+    locked = classify_error("database is locked", browser="Zen")
+    info = login_attempts_failed([(None, _needs_login()), ("Chrome", _needs_login("Chrome")),
+                                  ("Arc", _needs_login("Arc")), ("Zen", locked)])
+    assert info.message == ("The site wants you to sign in first. Your logins from Chrome and Arc didn't work "
+                            "for it. Close Zen completely so its login can be read. Log into the site in one of "
+                            "them, make sure the video plays, then click Retry.")
+
+
+def test_one_browser_keeps_its_own_message():
+    locked = classify_error("database is locked", browser="Zen")
+    info = login_attempts_failed([("Zen", locked), (None, _needs_login())])
+    assert info.status is Status.COOKIES_LOCKED and info.message == locked.message
 
 
 def test_cookies_unreadable_copy_failure():

@@ -385,27 +385,74 @@ def test_unique_stem_across_new_formats(tmp_path):
 
 
 def test_login_fallback_retry(monkeypatch):
-    """A 'needs login' result is retried once with the browser login, and says so."""
+    """A 'needs login' result is retried with each browser login in turn until one works."""
     from app.browsers import LoginSource
     from app.engine import CheckResult
     from app.errors import classify_error, ready
+    zen = LoginSource("firefox:/z", "Zen — Default", "Zen", "firefox", "/z")
+    chrome = LoginSource("chrome", "Chrome", "Chrome", "chrome", None)
+    arc = LoginSource("arc", "Arc", "Arc", "arc", None)
+    calls, attempts = [], []
+
+    def fake_once(self, req):
+        calls.append(req.login)
+        if req.login == chrome:
+            return CheckResult(classify_error("Failed to decrypt with DPAPI", browser="Chrome"))
+        if req.login != arc:
+            return CheckResult(classify_error("The web client only works when logged-in",
+                                              browser=req.login.app_name))
+        return CheckResult(ready(), url=req.url)
+
+    monkeypatch.setattr(Engine, "_check_once", fake_once)
+    res = Engine().check_link(CheckRequest("https://vimeo.com/1", fallback_logins=(zen, chrome, arc)),
+                              on_attempt=attempts.append)
+    assert res.ok and res.used_login and res.login == arc
+    assert calls == [engine.NONE_SOURCE, zen, chrome, arc]
+    assert attempts == [zen, chrome, arc]
+    assert res.failed_logins == (("none", Status.NEEDS_LOGIN), (zen.key, Status.NEEDS_LOGIN),
+                                 ("chrome", Status.COOKIES_UNREADABLE))
+
+    # None worked: one message naming what was tried.
+    calls.clear()
+    res = Engine().check_link(CheckRequest("https://vimeo.com/1", fallback_logins=(zen, chrome, zen)))
+    assert calls == [engine.NONE_SOURCE, zen, chrome]  # duplicates are tried once
+    assert res.result.status is Status.NEEDS_LOGIN and not res.used_login
+    assert "Zen" in res.result.message and "Chrome" in res.result.message
+
+    # No fallback: the needs-login result is returned as is.
+    calls.clear()
+    res = Engine().check_link(CheckRequest("https://vimeo.com/1"))
+    assert res.result.status is Status.NEEDS_LOGIN and not res.used_login and len(calls) == 1
+
+
+def test_login_chain_stops_on_other_problems(monkeypatch):
+    """A problem a login can't fix (network, password, DRM) ends the chain right away."""
+    from app.browsers import LoginSource
+    from app.engine import CheckResult
+    from app.errors import classify_error
     zen = LoginSource("firefox:/z", "Zen — Default", "Zen", "firefox", "/z")
     calls = []
 
     def fake_once(self, req):
         calls.append(req.login)
-        if req.login.is_none:
-            return CheckResult(classify_error("The web client only works when logged-in"))
-        return CheckResult(ready(), url=req.url)
+        return CheckResult(classify_error("protected by a password, use the --video-password option"))
 
     monkeypatch.setattr(Engine, "_check_once", fake_once)
-    res = Engine().check_link(CheckRequest("https://vimeo.com/1", fallback_login=zen))
-    assert res.ok and res.used_login
-    assert calls == [engine.NONE_SOURCE, zen]
-    # No fallback: the needs-login result is returned as is.
-    calls.clear()
-    res = Engine().check_link(CheckRequest("https://vimeo.com/1"))
-    assert res.result.status is Status.NEEDS_LOGIN and not res.used_login and len(calls) == 1
+    res = Engine().check_link(CheckRequest("https://vimeo.com/1", login=zen, fallback_logins=(engine.NONE_SOURCE,)))
+    assert res.result.status is Status.NEEDS_PASSWORD and calls == [zen]
+
+
+def test_arc_is_registered_with_the_engine():
+    from yt_dlp import cookies as ydl_cookies
+    engine.register_extra_browsers()
+    engine.register_extra_browsers()  # twice is harmless
+    assert "arc" in ydl_cookies.SUPPORTED_BROWSERS and "arc" in ydl_cookies.CHROMIUM_BASED_BROWSERS
+    cfg = ydl_cookies._get_chromium_based_browser_settings("arc")
+    assert cfg["keyring_name"] == "Arc" and cfg["supports_profiles"]
+    assert ydl_cookies._get_chromium_based_browser_settings("chrome")["keyring_name"] == "Chrome"
+    # yt-dlp accepts the name, then fails to find a database (no Arc here) the normal way.
+    with pytest.raises(FileNotFoundError):
+        ydl_cookies.extract_cookies_from_browser("arc", "/nonexistent/Arc/User Data/Default")
 
 
 @requires_ffmpeg
