@@ -1,4 +1,4 @@
-"""Generate assets/icon.ico and assets/icon.png in the brand colors from app/theme.py.
+"""Generate assets/icon.ico, assets/icon.png and assets/icon.icns in the brand colors from app/theme.py.
 
 A download arrow on a rounded tile (no logo). Re-run after changing the theme colors:
     python scripts/make_icon.py
@@ -37,7 +37,8 @@ def main() -> None:
     big = draw(SIZE)
     big.save(ASSETS / "icon.png")
     big.save(ASSETS / "icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
-    print("wrote", ASSETS / "icon.ico", ASSETS / "icon.png")
+    draw(1024).save(ASSETS / "icon.icns")  # Mac app icon (Pillow writes every size from 16 to 1024)
+    print("wrote", ASSETS / "icon.ico", ASSETS / "icon.png", ASSETS / "icon.icns")
 
 
 if __name__ == "__main__":

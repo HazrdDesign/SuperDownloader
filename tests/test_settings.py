@@ -40,6 +40,16 @@ def test_settings_path_under_appdata(appdata):
     assert paths.settings_file() == appdata / "settings.json"
 
 
+def test_app_folder_on_each_platform(monkeypatch, tmp_path):
+    monkeypatch.delenv("VD_APPDATA", raising=False)
+    monkeypatch.setattr(paths.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(paths.sys, "platform", "darwin")
+    assert paths.app_data_dir() == tmp_path / "Library" / "Application Support" / "SuperDownloader"
+    monkeypatch.setattr(paths.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    assert paths.app_data_dir() == tmp_path / "Roaming" / "SuperDownloader"
+
+
 def test_corrupt_file_falls_back_and_keeps_copy(appdata):
     appdata.mkdir(parents=True)
     paths.settings_file().write_text("{not json", encoding="utf-8")
@@ -128,8 +138,7 @@ def test_recent_projects(appdata):
 
 def test_legacy_app_folder_is_migrated(tmp_path, monkeypatch):
     monkeypatch.delenv("VD_APPDATA", raising=False)
-    monkeypatch.setenv("APPDATA", str(tmp_path))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(paths, "_roaming_root", lambda: tmp_path)  # %APPDATA%, ~/Library/Application Support...
     old = tmp_path / "VideoDownloader"
     (old / "engine").mkdir(parents=True)
     (old / "engine" / "active.json").write_text("{}")
