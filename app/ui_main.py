@@ -82,6 +82,7 @@ class MainWindow(ctk.CTk):
         self._download_thread: threading.Thread | None = None
         self._visible: set[str] = {"header", "url"}
         self._thumb_image: ctk.CTkImage | None = None
+        self._blank_thumb: ctk.CTkImage | None = None
         self.banner_status: Status | None = None
 
         self.login_sources = login_sources if login_sources is not None else browsers.all_sources()
@@ -433,8 +434,7 @@ class MainWindow(ctk.CTk):
         self.result = None
         self.last_error = None
         self.saved_files = []
-        self._thumb_image = None
-        self.thumb_label.configure(image=None, text="")
+        self._set_thumbnail(None)
 
     def _login_needed(self) -> bool:
         return self.last_error is not None and self.last_error.status in LOGIN_STATES
@@ -463,7 +463,6 @@ class MainWindow(ctk.CTk):
         meta = [x for x in (v.uploader if v else None, human_duration(v.duration) if v else None,
                             v.site if v else None) if x]
         self.meta_label.configure(text="  ·  ".join(meta))
-        self.thumb_label.configure(text="")
 
         values = [q.display for q in res.qualities]
         self.quality_menu.configure(values=values)
@@ -499,6 +498,20 @@ class MainWindow(ctk.CTk):
             self._visible.add("referer")
             self.after(50, self.referer_entry.focus_set)
 
+    def _set_thumbnail(self, image: ctk.CTkImage | None) -> None:
+        """Show ``image`` (or the blank placeholder) in the preview.
+
+        The label must be pointed at the new image *before* the old one is released: a
+        released CTkImage deletes its Tk image, and a label still using it then fails every
+        later configure() with 'image "pyimageN" doesn't exist'.
+        """
+        if self._blank_thumb is None:
+            from PIL import Image
+            blank = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+            self._blank_thumb = ctk.CTkImage(light_image=blank, dark_image=blank, size=(1, 1))
+        self.thumb_label.configure(image=image or self._blank_thumb, text="")
+        self._thumb_image = image  # the previous image is released only now
+
     def _on_thumbnail(self, data: bytes | None) -> None:
         if not data:
             return
@@ -507,8 +520,7 @@ class MainWindow(ctk.CTk):
             img = Image.open(io.BytesIO(data))
             img.load()
             img.thumbnail((160, 90))
-            self._thumb_image = ctk.CTkImage(light_image=img, dark_image=img, size=img.size)
-            self.thumb_label.configure(image=self._thumb_image, text="")
+            self._set_thumbnail(ctk.CTkImage(light_image=img, dark_image=img, size=img.size))
         except Exception as e:  # noqa: BLE001 - a missing thumbnail is cosmetic
             log.debug("Could not show thumbnail: %s", e)
 

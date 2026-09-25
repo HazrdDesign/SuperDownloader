@@ -514,3 +514,43 @@ def test_ui_stays_responsive_with_real_engine(make_app, media_server, tmp_path):
     assert list((tmp_path / "out").iterdir()) == []  # partial files removed
     worst = max(stalls)
     assert worst < 0.25, f"UI thread blocked for {worst * 1000:.0f} ms"
+
+
+def _png_bytes(color=(200, 30, 30)) -> bytes:
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (320, 180), color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+class ThumbEngine(FakeEngine):
+    def check_link(self, req):
+        res = super().check_link(req)
+        if res.video:
+            res.video.thumbnail = "https://example.invalid/thumb.png"
+        return res
+
+
+def test_thumbnail_then_new_check_does_not_crash(make_app, monkeypatch):
+    """Regression (user log): after a thumbnail was shown, re-checking raised
+    'image "pyimage1" doesn't exist' from _clear_result and on every later action."""
+    monkeypatch.setattr("app.ui_main.fetch_thumbnail", lambda url: _png_bytes())
+    errors = []
+    app = make_app(ThumbEngine())
+    app.report_callback_exception = lambda *exc: errors.append(exc)
+    check(app, "https://vimeo.com/1")
+    assert pump(app, 2, lambda: app._thumb_image is not None)
+    # Everything that clears the result: a new check, Retry, editing the URL, Download another.
+    check(app, "https://vimeo.com/2")
+    pump(app, 0.5)
+    app.retry()
+    assert pump(app, 3, lambda: app.stage == "checked")
+    app.url_var.set("https://vimeo.com/3")
+    pump(app, 0.2)
+    app.download_another()
+    pump(app, 0.2)
+    check(app, "https://vimeo.com/4")
+    pump(app, 0.5)
+    assert errors == []
+    assert app.banner_status is Status.READY
