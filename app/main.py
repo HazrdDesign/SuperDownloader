@@ -166,12 +166,17 @@ def _selftest_engine(ffmpeg: Path | None) -> str:
             res = eng.check_link(CheckRequest(f"http://127.0.0.1:{server.server_address[1]}/clip.mp4"))
             if not res.ok:
                 return f"error: check {res.result.status.value}: {res.result.detail[-300:]}"
+            from app.engine import FORMATS_BY_KEY
             names = []
-            for q in (res.qualities[0], next(q for q in res.qualities if q.audio_only)):
-                r = eng.download(DownloadJob([res.url], q, out), lambda p: None)
+            quality = res.qualities[0] if res.qualities else None
+            # Original MP4, MP3, and the edit-ready re-encode (proves FFmpeg's H.264 encoder is there).
+            for key in ("original", "mp3", "edit"):
+                fmt = FORMATS_BY_KEY[key]
+                r = eng.download(DownloadJob([res.url], quality if fmt.uses_quality else None, out / key, fmt=fmt),
+                                 lambda p: None)
                 if not r.files:
-                    return f"error: download {q.key}: {r.error.detail[-300:] if r.error else '?'}"
-                names.append(r.files[0].name)
+                    return f"error: download {key}: {r.error.detail[-300:] if r.error else '?'}"
+                names.append(f"{key}:{r.files[0].name}")
             return "ok: " + ", ".join(names)
         finally:
             server.shutdown()
@@ -194,10 +199,11 @@ def _selftest_window() -> str:
                          history=History(persist=False))
         win.withdraw()
         win.update()
+        dnd = getattr(win, "TkdndVersion", None)
         win.open_settings()
         win.update()
         win.destroy()
-        return "ok"
+        return f"ok (drag and drop: {dnd or 'unavailable'})"
     except Exception as e:  # noqa: BLE001
         return f"error: {e!r}"
 

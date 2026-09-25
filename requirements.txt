@@ -5,6 +5,7 @@ yt-dlp[default,curl-cffi]==2026.8.19   # the downloader engine (updatable at run
 yt-dlp-ejs==0.8.0                      # YouTube JavaScript challenge solver scripts (run by bundled Deno)
 customtkinter==6.0.0
 pillow==12.3.0
+tkinterdnd2==0.6.3                     # drag and drop links onto the window
 
 # yt-dlp's optional dependencies (pulled in by the [default,curl-cffi] extras), pinned
 brotli==1.2.0

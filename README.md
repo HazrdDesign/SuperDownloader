@@ -1,135 +1,154 @@
-# Video Downloader
+# Super Downloader
 
-A simple Windows app for downloading videos. Open it, paste a link, see whether the link
-will work, pick a quality, and download it to your Downloads folder. It's a single `.exe`
-with nothing to install. Behind the scenes it uses [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+A simple Windows app for downloading videos, made for dgnl.co. Paste a link and the app tells you
+right away whether it will work. Pick a quality and a format, then download. It runs on
+[yt-dlp](https://github.com/yt-dlp/yt-dlp), with FFmpeg and Deno built in, so there's nothing else
+to install.
 
-- Paste a link. The app checks it right away and tells you in one plain sentence whether it will work.
-- The quality choices come from what the video actually has (4K, 1080p, 720p… or Audio only as MP3).
-- Files are MP4 (or MP3), named after the video. Nothing is ever overwritten: a second copy
-  becomes `Title (1).mp4`.
-- Private or members-only videos can use the login already saved in Firefox, Zen, LibreWolf or
-  Floorp. Your password is never seen or stored.
-- Copy-protected (DRM) videos are detected and not downloaded. The app never tries to get around DRM.
+- **Paste, check, download.** One plain sentence tells you if a link works. The quality list comes from what the
+  video actually has (4K, 1080p, 720p…).
+- **Formats for editing:**
+  - **Original MP4**, the default, with no re-encoding
+  - **Edit-ready MP4**: constant frame rate H.264, so Premiere and Resolve handle it cleanly
+  - **ProRes 422 HQ (.mov)**
+  - **MP3** or **WAV** audio
+  - the **full-resolution thumbnail** as a JPG
+- **Queue.** Keep pasting while something downloads, or paste a whole list of links at once.
+- **History.** Every past download is listed, green if it worked and red if it failed. Click one to download it again with the same settings.
+- **More options** (hidden until you need them):
+  - **Clip** a time range.
+  - Save **subtitles** as `.srt`.
+  - Set a **Client / Project**, which picks the folder and the file-name prefix.
+- **Private videos** use the login already saved in your browser (Firefox, Zen, LibreWolf or Floorp).
+  Your password is never seen or stored. Copy-protected (DRM) videos are detected and never downloaded.
+
+---
+
+## Installing
+
+Download from the latest **windows-build** run on GitHub (Actions → newest green run → *Artifacts* →
+**SuperDownloader**) and unzip it:
+
+| File | Use it when |
+|---|---|
+| **SuperDownloader-Setup.exe** | You want it installed. It starts in about a second and adds a Start-menu shortcut. No admin rights are needed. |
+| **SuperDownloader-Portable.exe** | You want a single file to carry around. It unpacks itself each time it starts, which takes a few seconds. |
+
+**Windows SmartScreen.** The app isn't code-signed yet, so the first time Windows may say
+"Windows protected your PC". Click **More info**, then **Run anyway**. Windows remembers this for that file.
+
+Upgrading from *Video Downloader*? Your settings, your default login browser and any updated engine are copied over
+the first time Super Downloader starts.
 
 ---
 
 ## Using the app
 
-1. **Paste a link** into the box (Ctrl+V or the **Paste** button). Checking starts on its own.
-   You can also press **Check** or Enter.
+1. **Paste a link.** Use Ctrl+V or **Paste**, drag a link onto the window, or copy a link in your browser and switch
+   to the app, which picks it up for you. The check starts on its own.
 2. Read the colored message:
 
-   | Message | What it means / what to do |
+   | Message | What to do |
    |---|---|
-   | 🟢 **Ready to download** | You'll see the thumbnail, title, uploader and length. |
-   | 🟡 **Private or members-only** | Log into the site in your browser, pick that browser under **Use login from**, then **Retry**. |
-   | 🟡 **Needs a password** | Only if you were given the password: type it in and **Retry**. |
-   | 🟡 **Only plays on a specific website** | Enter the address of the page the video plays on under **Page it plays on**, then **Retry**. |
+   | 🟢 **Ready to download** | Choose Quality and Format, then press Download. |
+   | 🟡 **The site wants you to sign in / private video** | Log into the site in your browser and click **Retry**. The app uses that browser's login automatically. |
+   | 🟡 **Needs a password** | Only if you were given the password: type it in and click **Retry**. |
+   | 🟡 **Only plays on a specific website** | Enter the page it plays on and click **Retry**. |
    | 🔴 **Copy-protected** | This video can't be downloaded. |
-   | 🔴 **Not a web address / no video found / not available** | Check the link. |
-   | 🔴 **Couldn't connect** | Check your internet connection. **Details** shows the technical error. |
+   | 🔴 **Not a web address / no video / not available / couldn't connect** | Check the link or your connection. **Details** has the technical error. |
 
-3. Pick a **Quality**. The size shown is an estimate. The default comes from Settings.
-4. **Save to** shows where the file will go. Use **Change** to pick a different folder for this download only.
-5. Press **Download** (or Enter). You'll see progress, speed and time left. **Cancel** (or Esc)
-   stops the download and deletes the partial file.
-6. When it's done, **Show in folder** opens Explorer with the file selected. **Download another** starts over.
+3. **Quality** is Best or any height the video really has. **Format** is described above.
+4. **More options ▸**
+   - *Only part of the video*: enter a start and end time such as `1:30` and `2:05`.
+   - *Subtitles*: a language the video has, saved next to the video as `.srt`.
+   - *Project*: for example `Nike / Spring 2027`. The file goes into `…\Nike\Spring 2027\` and is named
+     `Nike_Spring-2027_2026-09-25_Title.mp4`. Recent projects are remembered.
+5. **Download** (or press Enter). The progress shows percent, speed and time left. **Cancel** (or Esc) removes partial files.
+   If you paste another link meanwhile, the download carries on in the **Queue**.
+6. When it's done, click **Show in folder**. You'll also hear a sound and the taskbar button flashes if you're in another app.
 
-If the link is part of a playlist, the app asks whether you want **just this video** (the default) or **all N videos**.
-All the videos go into a folder named after the playlist.
+**Logins in one place.** Vimeo links show a single checkbox, *Log in with Zen (for private or password-protected
+videos)*, which is already ticked. For any other site the app quietly retries with your browser login if the site
+asks for one. The browser is picked automatically: whichever Firefox-family browser you used most recently. You can
+change it in Settings.
+
+**Playlists.** The app asks whether you want just this video (the default) or all of them. A full playlist is saved in a folder named after it.
 
 ### Keyboard
 
 | Key | Action |
 |---|---|
-| Ctrl+V | Paste into the link box and check |
-| Enter | Check the link, or Download once it's ready |
-| Esc | Cancel the download (or stop a check) |
+| Ctrl+V | Paste into the link box and check. Several links go into the queue. |
+| Enter | Check, or Download once the link is ready |
+| Esc | Cancel the download or the check |
+
+### History
+
+Each download session is one row, green if it was saved and red if it failed. Cancelled downloads aren't listed.
+- **Click** a row to put the link back with the same quality, format, subtitles, clip and project.
+- **Show** opens the file in Explorer.
+- **Right-click** a row for *Copy link* or *Remove from history*.
+- **Clear** empties the list. Your files stay where they are.
 
 ### Settings (⚙)
 
-- **Default save folder**: your Downloads folder unless you choose another. The app checks that the folder exists and can be written to.
-- **Default quality**: Best available, 1080p, 720p or Audio only. If a video doesn't have that quality, Best is used.
-- **Default login source**: None, or one of the browser profiles found on this PC.
-- **Downloader engine**: shows the yt-dlp version. **Check for update** downloads a newer engine if there is one; restart the app to use it.
-- **Check for engine updates when the app starts** (on by default). This check is silent unless an update exists.
-- **Open logs**: opens the folder with the app's log files, which are useful when reporting a problem.
+- **Default save folder.** Your Downloads folder unless you choose another.
+- **Default quality** and **Default format.**
+- **Browser for logins.** Automatic (recommended), a specific browser profile, a custom profile folder, or *Never*.
+  Chrome, Edge and Brave are listed, but Windows usually blocks reading their logins.
+- **Use a video link I just copied** when switching to the app (on by default).
+- **Flash the taskbar and play a sound** when a download finishes (on by default).
+- **Downloader engine.** Shows the yt-dlp version. **Check for update** gets a newer one; restart the app to use it.
+  It can also check automatically when the app starts.
+- **Open logs.**
 
-Settings are stored in `%APPDATA%\VideoDownloader\settings.json`. Logs are in `%APPDATA%\VideoDownloader\logs\`.
-Passwords and cookie values are never written to the logs.
-
----
-
-## First run: the Windows SmartScreen warning
-
-The exe isn't code-signed, so the first time you open it Windows may show
-**"Windows protected your PC"**. To run it:
-
-1. Click **More info**.
-2. Click **Run anyway**.
-
-Windows remembers this, so you only need to do it once for each copy of the exe. Some antivirus
-programs are also cautious about new unsigned programs. If yours blocks it, allow `VideoDownloader.exe`.
-
-The first launch takes a few seconds because the app unpacks its bundled parts (FFmpeg and Deno).
+Settings, history and logs are in `%APPDATA%\SuperDownloader\`. Passwords and cookie values are never written anywhere.
 
 ---
 
 ## Troubleshooting
 
-**"This video is private or members-only"**
-1. Open the site in Firefox, Zen, LibreWolf or Floorp and make sure you're logged in and can play the video.
-2. In the app, choose that browser under **Use login from** and click **Retry**.
-
-**"Couldn't read your login from … Close … completely"**
-The browser is holding its login database open, or the login has expired. Log in again, **close the
-browser completely** (check the system tray), then click **Retry**.
-
-**"The login from … didn't work"**
-Your login in that browser may have expired, or you may be using a different browser profile.
-Log in again in that browser, close it, and retry. If you have several profiles, pick the one you logged in with.
-
-**Chrome, Edge or Brave**
-These are listed, but Windows encryption usually blocks other programs from reading their logins. For private
-videos, log in with Firefox, Zen, LibreWolf or Floorp instead.
-
-**A profile that isn't listed**
-Choose **Custom profile folder…** and select a Firefox-style profile folder (one that contains `cookies.sqlite`).
-
-**"Couldn't read this page. The website may have changed."** (or downloads from a site suddenly stop working)
-Sites change often. Open **Settings → Check for update**, update the downloader engine, and restart the app.
-
-**"Couldn't connect"**
-Check your internet connection, VPN or proxy. **Details** shows the exact error.
-
-**Something else**
-Open **Settings → Open logs** and include the newest `app.log` when you report the problem.
+- **"The site wants you to sign in" or "private video":** open the site in your browser (Zen, Firefox, LibreWolf or
+  Floorp), make sure you're logged in and the video plays, then click **Retry**.
+- **"Couldn't read your login from … Close … completely":** close that browser fully (check the system tray) and click **Retry**.
+- **"The login from … didn't work":** your login there may have expired, so log in again. If you have several browser profiles,
+  choose the right one in **Settings → Browser for logins**.
+- **Chrome / Edge / Brave:** Windows encryption usually blocks reading their logins. Use a Firefox-family browser for private videos.
+- **"Couldn't read this page. The website may have changed."** or a site that suddenly stops working: go to **Settings →
+  Check for update**, then restart the app.
+- **Edit-ready or ProRes takes a while:** those formats re-encode the video on your PC. The progress shows *Converting for editing… %*.
+  ProRes files are large, about 10× an MP4.
+- **Anything else:** open **Settings → Open logs** and send the newest `app.log`.
 
 ---
 
-## Building the exe
+## Building it yourself
 
-You need **Windows 10/11** and **Python 3.11 or newer** (from [python.org](https://www.python.org/downloads/),
-with "Add python.exe to PATH" ticked). Then double-click:
+You need **Windows 10/11** and **Python 3.11 or newer** (from [python.org](https://www.python.org/downloads/), with
+"Add python.exe to PATH" ticked). For the installer you also need
+[Inno Setup 6](https://jrsoftware.org/isinfo.php); without it only the portable exe is built. Then double-click:
 
 ```
 scripts\build.bat
 ```
 
 It will:
+1. create `.venv` and install the pinned `requirements.txt`.
+2. run `scripts\fetch_ffmpeg.ps1`, which downloads the pinned **FFmpeg 9.0.2** and **Deno 2.9.6** builds and checks their SHA-256.
+3. run the tests.
+4. build both versions with PyInstaller (`SuperDownloader.spec`).
+5. self-test both builds. The self-test downloads and converts a local test clip inside the exe, with no internet needed.
+6. build `dist\SuperDownloader-Setup.exe` with Inno Setup (`installer\SuperDownloader.iss`).
 
-1. create a virtual environment in `.venv` and install the pinned `requirements.txt`
-2. run `scripts\fetch_ffmpeg.ps1`, which downloads the pinned **FFmpeg 9.0.2** (essentials) and
-   **Deno 2.9.6** builds into `vendor\` and **verifies their SHA-256 checksums**
-3. run the tests (`pytest`)
-4. build `dist\VideoDownloader.exe` with PyInstaller (`VideoDownloader.spec`, one file, no console)
-5. run the exe's headless self-test (engine version, FFmpeg, Deno) and print the result
+GitHub Actions (`.github/workflows/windows-build.yml`) does the same on every push. It also installs the
+installer, runs the installed app, and runs live checks against YouTube and Vimeo.
 
-The output is **`dist\VideoDownloader.exe`**. Copy that single file anywhere. It needs nothing else installed.
+### Changing the brand colors
 
-GitHub Actions runs the same build on every push (`.github/workflows/windows-build.yml`), then tests
-the exe and runs live checks against YouTube and Vimeo. The exe is attached to each run as an artifact.
+All colors are in **`app/theme.py`**: `BACKGROUND`, `TEXT`, `ACCENT` (buttons, progress bars), and `ACCENT_TEXT`
+(text on accent buttons). Everything else is derived from them. After changing them, run
+`python scripts\make_icon.py` to recolor the icon, then rebuild. The green, amber and red status colors are deliberately
+not brand colors, so success and failure stay easy to tell apart.
 
 ### Development
 
@@ -140,49 +159,48 @@ set VD_NETWORK_TESTS=1                    # also run the test that downloads fro
 .venv\Scripts\python scripts\acceptance_smoke.py   # live YouTube/Vimeo checks
 ```
 
-`VD_APPDATA` points the app at a different settings/log folder (used by the tests). Set `VD_DEBUG=1`
-for more detailed logs.
+`VD_APPDATA` points the app at a different settings folder (the tests use it). `VD_DEBUG=1` writes more detailed logs.
 
 ### Project layout
 
 ```
 app/
-  main.py          entry point: logging, engine bootstrap, window; --selftest for CI
-  ui_main.py       main window
+  main.py          entry point: logging, settings migration, engine bootstrap, window; --selftest
+  ui_main.py       main window: form, queue panel, history panel
   ui_settings.py   settings window
-  ui_common.py     shared UI helpers (tooltip, colors, Show in folder)
-  engine.py        yt-dlp wrapper: check_link, list_qualities, download, cancel
-  errors.py        classify_error + Status: every error becomes one plain-English state
-  browsers.py      Firefox/Zen/LibreWolf/Floorp profile detection, Chrome/Edge/Brave listing
-  settings.py      settings JSON load/save and defaults
-  paths.py         %APPDATA% folders, Downloads (Known Folder API), bundled binaries
+  ui_common.py     tooltip, Show in folder, "done" notification
+  theme.py         brand colors → CustomTkinter theme
+  engine.py        yt-dlp wrapper: check, qualities, formats, clips, subtitles, download, convert, cancel
+  jobs.py          download queue (one at a time, background thread)
+  history.py       download history (history.json)
+  errors.py        classify_error: every error becomes one plain-English state
+  browsers.py      browser profile detection and automatic choice
+  settings.py      settings.json load/save, upgrades from older versions
+  paths.py         %APPDATA% folders, Downloads (Known Folder API), bundled binaries, migration
   updater.py       engine updates from PyPI, loaded at startup
-assets/            icon.ico / icon.png (scripts\make_icon.py regenerates them)
-vendor/            ffmpeg\ and deno\ (downloaded by the build, not committed)
+assets/            icon (generated from the theme by scripts\make_icon.py)
+installer/         Inno Setup script
+vendor/            FFmpeg and Deno (downloaded by the build, not committed)
 tests/             pytest suites
-scripts/           build.bat, fetch_ffmpeg.ps1, acceptance_smoke.py, make_icon.py
-docs/              acceptance checklist and results
+scripts/           build.bat, fetch_ffmpeg.ps1, selftest.ps1, acceptance_smoke.py, make_icon.py
+docs/              acceptance checklists and results
 ```
 
 ### How engine updates work
 
-A packaged exe can't `pip install`. Instead, **Update** downloads the newest yt-dlp release and the
-matching `yt-dlp-ejs` from PyPI as pure-Python wheels into `%APPDATA%\VideoDownloader\engine\` and checks
-them against the SHA-256 published by PyPI. On the next start, the app adds those wheels to the front
-of Python's import path, before anything loads yt-dlp. If the downloaded engine is missing, altered,
-fails to import, or is older than the one built into the exe, the app uses the built-in engine instead.
-It also remembers a version that failed so it doesn't offer it again.
+A packaged app can't `pip install`. Instead, **Update** downloads the newest yt-dlp and the matching `yt-dlp-ejs`
+from PyPI as pure-Python wheels into `%APPDATA%\SuperDownloader\engine\` and checks their SHA-256. On the next start,
+the app loads them before the built-in engine. If they're missing, altered, broken or older than the built-in
+engine, the app uses the built-in one instead.
 
 ---
 
 ## Third-party software
 
 - **yt-dlp** and **yt-dlp-ejs**: Unlicense
-- **FFmpeg** 9.0.2 "essentials" build by Gyan Doshi ([gyan.dev](https://www.gyan.dev/ffmpeg/builds/)):
-  GPL v3. The license is included in the build (`vendor\ffmpeg\LICENSE`). Source code:
-  [ffmpeg.org](https://ffmpeg.org/download.html) and the build page linked above.
-- **Deno**: MIT
-- **CustomTkinter**: MIT. **Pillow**: MIT-CMU.
+- **FFmpeg** 9.0.2 "essentials" build by Gyan Doshi ([gyan.dev](https://www.gyan.dev/ffmpeg/builds/)): GPL v3. The license
+  is included in the build. Source code: [ffmpeg.org](https://ffmpeg.org/download.html).
+- **Deno**: MIT. **CustomTkinter**: MIT. **Pillow**: MIT-CMU. **tkinterdnd2 / tkdnd**: MIT / BSD.
 
-Use this app only for videos you have the right to download. It does not remove or bypass copy
-protection (DRM) and never will.
+Use this app only for videos you have the right to download. It doesn't remove or bypass copy protection (DRM)
+and never will.

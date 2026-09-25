@@ -1,7 +1,7 @@
 name: windows-build
 
-# Builds VideoDownloader.exe exactly the way scripts\build.bat does on a user's PC,
-# self-tests the exe, and runs the live-site acceptance smoke tests.
+# Builds Super Downloader exactly the way scripts\build.bat does on a user's PC (portable exe
+# and installer), self-tests both builds, and runs the live-site acceptance smoke tests.
 on:
   push:
   pull_request:
@@ -20,23 +20,45 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Inno Setup (for the installer)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
       - name: Build (scripts\build.bat)
         shell: cmd
         timeout-minutes: 30
         run: scripts\build.bat
 
-      - name: Self-test report
+      - name: Self-test reports
         if: always()
         shell: pwsh
-        run: if (Test-Path build\selftest.json) { Get-Content build\selftest.json } else { "no self-test report" }
+        run: |
+          foreach ($f in 'build\selftest.json', 'build\selftest-folder.json') {
+            if (Test-Path $f) { "== $f"; Get-Content $f } else { "no $f" }
+          }
 
-      - name: Exe size and startup time
+      - name: Sizes and start-up times
         shell: pwsh
         run: |
-          $exe = Get-Item dist\VideoDownloader.exe
-          "Size: {0:N1} MB" -f ($exe.Length / 1MB)
-          # Second run: the self-test prints how long it took from launch to exit.
-          scripts\selftest.ps1 -Report "$PWD\build\selftest2.json" | Select-Object -First 1
+          foreach ($f in 'dist\SuperDownloader-Portable.exe', 'dist\SuperDownloader-Setup.exe') {
+            if (Test-Path $f) { "{0}: {1:N1} MB" -f $f, ((Get-Item $f).Length / 1MB) } else { "missing: $f" }
+          }
+          "Portable (unpacks on every start):"
+          scripts\selftest.ps1 -Report "$PWD\build\t1.json" | Select-Object -First 1
+          "Installed folder version:"
+          scripts\selftest.ps1 -Exe dist\SuperDownloader-folder\SuperDownloader.exe -Report "$PWD\build\t2.json" | Select-Object -First 1
+
+      - name: Installer installs and the installed app runs
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\SuperDownloader-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\Super Downloader\SuperDownloader.exe'
+          if (-not (Test-Path $exe)) { throw "not installed at $exe" }
+          $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Super Downloader.lnk'
+          if (-not (Test-Path $lnk)) { throw "no Start menu shortcut" }
+          scripts\selftest.ps1 -Exe $exe -Report "$PWD\build\installed.json"
 
       - name: Exe loads an updated engine from %APPDATA%
         shell: pwsh
@@ -73,9 +95,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: VideoDownloader
+          name: SuperDownloader
           path: |
-            dist/VideoDownloader.exe
-            build/selftest.json
+            dist/SuperDownloader-Setup.exe
+            dist/SuperDownloader-Portable.exe
+            build/selftest*.json
             build/acceptance/
           if-no-files-found: warn

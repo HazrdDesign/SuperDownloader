@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app import paths  # noqa: E402
-from app.engine import CheckRequest, DownloadJob, Engine  # noqa: E402
+from app.engine import FORMATS_BY_KEY, CheckRequest, DownloadJob, Engine  # noqa: E402
 
 # Several public candidates per site: cloud CI IPs are often blocked or served different pages,
 # so every candidate's check result is reported and the first that works is downloaded.
@@ -103,8 +103,8 @@ def site_test(label: str, urls: list[str], out: Path, engine: Engine) -> None:
            names=sorted(p.name for p in folder.iterdir()))
 
     # Audio only -> playable MP3
-    audio = next(x for x in res.qualities if x.audio_only)
-    r3 = engine.download(DownloadJob([res.url], audio, out / f"{label.lower()}-audio"), lambda p: None)
+    r3 = engine.download(DownloadJob([res.url], None, out / f"{label.lower()}-audio", fmt=FORMATS_BY_KEY["mp3"]),
+                         lambda p: None)
     if r3.files:
         info = probe(r3.files[0])
         ok = r3.files[0].suffix == ".mp3" and [s["codec"] for s in info["streams"]] == ["mp3"] and info["duration"] > 1

@@ -1,13 +1,19 @@
-"""Generate assets/icon.ico and assets/icon.png (a download arrow on a rounded tile).
+"""Generate assets/icon.ico and assets/icon.png in the brand colors from app/theme.py.
 
-Run once with Pillow installed: python scripts/make_icon.py. The outputs are committed.
+A download arrow on a rounded tile (no logo). Re-run after changing the theme colors:
+    python scripts/make_icon.py
 """
 
+import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageColor, ImageDraw
 
-ASSETS = Path(__file__).resolve().parent.parent / "assets"
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from app import theme  # noqa: E402
+
+ASSETS = ROOT / "assets"
 SIZE = 256
 
 
@@ -15,8 +21,9 @@ def draw(size: int = SIZE) -> Image.Image:
     s = size / 256
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([8 * s, 8 * s, 248 * s, 248 * s], radius=52 * s, fill=(31, 106, 165, 255))
-    white = (255, 255, 255, 255)
+    tile = ImageColor.getrgb(theme.ACCENT) + (255,)
+    white = ImageColor.getrgb(theme.ACCENT_TEXT) + (255,)  # the arrow: text color on the accent
+    d.rounded_rectangle([8 * s, 8 * s, 248 * s, 248 * s], radius=52 * s, fill=tile)
     # Arrow shaft and head.
     d.rounded_rectangle([108 * s, 44 * s, 148 * s, 138 * s], radius=10 * s, fill=white)
     d.polygon([(70 * s, 118 * s), (186 * s, 118 * s), (128 * s, 180 * s)], fill=white)

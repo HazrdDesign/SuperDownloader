@@ -1,5 +1,8 @@
-# PyInstaller build definition for SuperDownloader.exe (one file, no console window).
-# Build with scripts\build.bat, which fetches vendor\ffmpeg and vendor\deno first.
+# PyInstaller build definition for Super Downloader. Build with scripts\build.bat, which fetches
+# vendor\ffmpeg and vendor\deno first. Produces two things from one analysis:
+#   dist\SuperDownloader-Portable.exe portable single file (unpacks itself on every start)
+#   dist\SuperDownloader-folder\      the same app as a folder: starts much faster; the installer
+#                                     (installer\SuperDownloader.iss) packages this folder
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
@@ -27,6 +30,7 @@ datas = [
     (str(VENDOR / "deno" / "VERSION.txt"), "deno"),
 ]
 datas += collect_data_files("customtkinter")
+datas += collect_data_files("tkinterdnd2")  # the tkdnd drag-and-drop library for Tk
 # importlib.metadata needs these to report the bundled engine version (see app/updater.py).
 datas += copy_metadata("yt-dlp") + copy_metadata("yt-dlp-ejs")
 
@@ -35,22 +39,23 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["app.ui_main", "app.ui_settings", "PIL._tkinter_finder"],
+    hiddenimports=["app.ui_main", "app.ui_settings", "PIL._tkinter_finder", "tkinterdnd2"],
     excludes=["pytest", "_pytest", "tests"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name="SuperDownloader",
+common = dict(
     icon=str(ROOT / "assets" / "icon.ico"),
     console=False,
     upx=False,  # UPX-packed executables trigger more antivirus false positives
     strip=False,
     debug=False,
 )
+
+# Portable single file.
+portable = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="SuperDownloader-Portable", **common)
+
+# Folder version (fast start) for the installer.
+folder_exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="SuperDownloader", **common)
+COLLECT(folder_exe, a.binaries, a.datas, name="SuperDownloader-folder", strip=False, upx=False)

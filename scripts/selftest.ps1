@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-  Runs "SuperDownloader.exe --selftest <report>" with a time limit and prints the report.
+  Runs "SuperDownloader-Portable.exe --selftest <report>" with a time limit and prints the report.
   A --windowed exe that fails to start shows an error dialog and would wait forever,
   so the process is killed after -TimeoutSeconds.
 #>
 param(
-    [string]$Exe = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\SuperDownloader.exe'),
+    [string]$Exe = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\SuperDownloader-Portable.exe'),
     [string]$Report = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build\selftest.json'),
     [int]$TimeoutSeconds = 300
 )
