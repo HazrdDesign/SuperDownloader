@@ -8,13 +8,20 @@ name: build
 # every build self-tested. Mac: built as scripts/build_mac.sh does, installed from the .dmg and
 # self-tested. Both also run the live-site acceptance smoke tests.
 #
-# Releases: pushing a version tag (git tag v2.0.1 && git push origin v2.0.1) runs the same builds
-# and then publishes a GitHub Release with the three files, so people can download from the
-# repository's Releases section without a GitHub account. The tag must match app/__init__.py.
+# Releases publish the three files to the repository's Releases section, where anyone can download
+# them without a GitHub account. Either:
+#   - on GitHub: Actions -> build -> Run workflow -> tick "Publish a release" -> Run workflow, or
+#   - push a version tag: git tag v2.0.1 && git push origin v2.0.1
+# The version comes from app/__init__.py (a pushed tag must match it). Both builds must pass first.
 on:
   push:          # every branch and every tag
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a release (version from app/__init__.py) after both builds pass"
+        type: boolean
+        default: false
 
 jobs:
   windows:
@@ -199,19 +206,26 @@ jobs:
   release:
     name: Publish release
     needs: [windows, mac]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the release and upload its files
     steps:
       - uses: actions/checkout@v4
 
-      - name: Tag matches the app version
+      - name: Version to publish
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          app="v$(python3 -c 'import re; print(re.search(r"__version__ = \"(.+?)\"", open("app/__init__.py").read())[1])')"
-          if [ "$app" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match the app version $app in app/__init__.py"; exit 1
+          tag="v$(python3 -c 'import re; print(re.search(r"__version__ = \"(.+?)\"", open("app/__init__.py").read())[1])')"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$tag" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the app version $tag in app/__init__.py"; exit 1
           fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists. Raise __version__ in app/__init__.py for a new release."; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
         with:
@@ -228,7 +242,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la release
-          version="${GITHUB_REF_NAME#v}"
+          tag="${{ steps.version.outputs.tag }}"
+          version="${tag#v}"
           cat > notes.md <<NOTES
           ## Download
 
@@ -245,7 +260,8 @@ jobs:
 
           The app isn't signed by Apple or Microsoft yet, which is why those one-time warnings appear.
           NOTES
-          gh release create "$GITHUB_REF_NAME" \
+          # Creates the tag on the built commit if it doesn't exist yet (the Run workflow button).
+          gh release create "$tag" \
             release/SuperDownloader-mac.dmg release/SuperDownloader-Setup.exe release/SuperDownloader-Portable.exe \
-            --title "Super Downloader $version" --notes-file notes.md --verify-tag --latest
+            --target "$GITHUB_SHA" --title "Super Downloader $version" --notes-file notes.md --latest
 
