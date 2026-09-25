@@ -626,9 +626,25 @@ def redact(text: str) -> str:
     return _COOKIE_RX.sub(r"\1<redacted>", text)
 
 
+def put_bundled_tools_on_path() -> None:
+    """Add the bundled FFmpeg folder to this process's PATH.
+
+    yt-dlp passes ``ffmpeg_location`` to most of its FFmpeg use, but a few checks (for
+    example "can this video be downloaded partially?" for clip ranges) only search PATH.
+    Without this, clipping fails on PCs without FFmpeg installed system-wide.
+    """
+    ff = paths.ffmpeg_dir()
+    if not ff:
+        return
+    current = os.environ.get("PATH", "")
+    if str(ff) not in current.split(os.pathsep):
+        os.environ["PATH"] = str(ff) + os.pathsep + current
+
+
 class Engine:
     def __init__(self) -> None:
         self._cancel = threading.Event()
+        put_bundled_tools_on_path()
 
     # -- options ---------------------------------------------------------------------------
 

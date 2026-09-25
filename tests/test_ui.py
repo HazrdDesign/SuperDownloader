@@ -651,7 +651,7 @@ def test_copied_link_is_used_when_the_app_gets_focus(make_app):
     eng = FakeEngine()
     app = make_app(eng)
     app.clipboard_clear()
-    app.clipboard_append("https://www.youtube.com/watch?v=copied")
+    app.clipboard_append("https://www.youtube.com/watch?v=copied")  # copied while the app is open
     app._on_focus_in()
     assert pump(app, 3, lambda: app.stage == "checked")
     assert app.url_var.get() == "https://www.youtube.com/watch?v=copied"
@@ -660,6 +660,19 @@ def test_copied_link_is_used_when_the_app_gets_focus(make_app):
     app._on_focus_in()
     pump(app, 0.3)
     assert app.url_var.get() == ""
+
+
+def test_link_already_on_clipboard_at_start_is_not_used(make_app):
+    import tkinter
+    root = tkinter.Tk()
+    root.clipboard_clear()
+    root.clipboard_append("https://www.youtube.com/watch?v=stale")
+    root.update()
+    app = make_app()
+    app._on_focus_in()
+    pump(app, 0.3)
+    assert app.url_var.get() == "" and app.stage == "empty"
+    root.destroy()
 
 
 def test_copied_plain_text_is_ignored(make_app):

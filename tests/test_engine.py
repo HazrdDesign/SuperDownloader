@@ -501,3 +501,14 @@ def test_cancel_during_conversion_leaves_nothing(media_server, tmp_path):
     r = e.download(DownloadJob([res.url], res.qualities[0], tmp_path, fmt=FORMATS_BY_KEY["prores"]), on_progress)
     assert r.cancelled
     assert list(tmp_path.iterdir()) == []
+
+
+def test_bundled_ffmpeg_is_put_on_path(tmp_path, monkeypatch):
+    """yt-dlp's clip-range check only searches PATH, so the bundled FFmpeg must be on it."""
+    import os
+    monkeypatch.setattr(engine.paths, "ffmpeg_dir", lambda: tmp_path)
+    monkeypatch.setenv("PATH", "C:\\Windows")
+    Engine()
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(tmp_path)
+    Engine()  # only added once
+    assert os.environ["PATH"].split(os.pathsep).count(str(tmp_path)) == 1

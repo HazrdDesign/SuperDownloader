@@ -143,6 +143,12 @@ class MainWindow(ctk.CTk, _DnDBase):
         self._poll_id = self.after(POLL_MS, self._poll)
         self.after(100, self.url_entry.focus_set)
         self.after(200, self._fit_height)
+        # Only links copied while the app is open are picked up, not whatever old link
+        # happens to be on the clipboard when it starts.
+        try:
+            self._last_clipboard = self.clipboard_get().strip()
+        except tk.TclError:
+            self._last_clipboard = ""
 
         if check_updates is None:
             check_updates = settings.check_updates_on_launch
