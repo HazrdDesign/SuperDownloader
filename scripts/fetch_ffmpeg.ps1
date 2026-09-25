@@ -123,8 +123,12 @@ foreach ($pin in $Pins) {
     Write-Host "  installed to vendor\$($pin.Dest)"
 }
 
-& (Join-Path $Vendor 'ffmpeg\ffmpeg.exe') -hide_banner -version | Select-Object -First 1
+# Capture the output first: piping straight into Select-Object -First 1 can stop the tool early
+# and make its exit code non-zero even though it works.
+$out = & (Join-Path $Vendor 'ffmpeg\ffmpeg.exe') -hide_banner -version
 if ($LASTEXITCODE -ne 0) { throw 'ffmpeg.exe does not run' }
-& (Join-Path $Vendor 'deno\deno.exe') --version | Select-Object -First 1
+$out | Select-Object -First 1
+$out = & (Join-Path $Vendor 'deno\deno.exe') --version
 if ($LASTEXITCODE -ne 0) { throw 'deno.exe does not run' }
+$out | Select-Object -First 1
 Write-Host 'Third-party binaries ready.'
