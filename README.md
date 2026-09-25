@@ -5,6 +5,16 @@ right away whether it will work. Pick a quality and a format, then download. It 
 [yt-dlp](https://github.com/yt-dlp/yt-dlp), with FFmpeg and Deno built in, so there's nothing else
 to install.
 
+## ⬇ Download
+
+| | |
+|---|---|
+| **Mac** (Apple chip: M1 or newer) | [**SuperDownloader-mac.dmg**](https://github.com/HazrdDesign/SuperDownloader/releases/latest/download/SuperDownloader-mac.dmg) |
+| **Windows** 10 / 11 | [**SuperDownloader-Setup.exe**](https://github.com/HazrdDesign/SuperDownloader/releases/latest/download/SuperDownloader-Setup.exe) · or the no-install [Portable exe](https://github.com/HazrdDesign/SuperDownloader/releases/latest/download/SuperDownloader-Portable.exe) |
+
+These links always get the newest version. All versions are in [Releases](https://github.com/HazrdDesign/SuperDownloader/releases).
+The first time you open it there's a one-time security prompt; see [Installing](#installing).
+
 - **Paste, download.** The link is checked as soon as it's pasted; if there's a problem, one plain sentence says what. The quality list comes from what the
   video actually has (4K, 1080p, 720p…).
 - **Formats for editing:**
@@ -27,19 +37,15 @@ to install.
 
 ## Installing
 
-The app is built on GitHub for both systems every time the code changes. Both downloads are on the same page:
-**Actions → build** (left) → the newest run with a green tick → scroll to **Artifacts**:
+Get the app from the [Download](#-download) links above or the
+[Releases](https://github.com/HazrdDesign/SuperDownloader/releases) page. No GitHub account is needed.
 
-| Download | Contains |
-|---|---|
-| **SuperDownloader-Mac** | `SuperDownloader-mac.dmg`, for Apple silicon Macs (M1 and newer) |
-| **SuperDownloader-Windows** | `SuperDownloader-Setup.exe` (installer) and `SuperDownloader-Portable.exe` |
-
-The `*-test-reports` downloads are only for checking a build.
+*Test builds:* every change is also built on GitHub (**Actions → build** → a run → **Artifacts**:
+SuperDownloader-Mac and SuperDownloader-Windows). Those need a GitHub login and are deleted after 90 days.
 
 ### Mac (Apple silicon: M1 or newer)
 
-Download **SuperDownloader-Mac** (see above), unzip it, open **SuperDownloader-mac.dmg** and drag **Super Downloader** onto **Applications**.
+Download **SuperDownloader-mac.dmg**, open it and drag **Super Downloader** onto **Applications**.
 
 **The first time you open it**, macOS says it can't check the app for malicious software, because it isn't signed
 with an Apple developer certificate yet. Click **Done**, then open **System Settings → Privacy & Security**, scroll
@@ -53,7 +59,7 @@ Settings, history and logs are in `~/Library/Application Support/SuperDownloader
 
 ### Windows
 
-Download **SuperDownloader-Windows** (see above) and unzip it:
+Download one of these:
 
 | File | Use it when |
 |---|---|
@@ -184,6 +190,14 @@ It will:
 
 GitHub Actions (the Windows job in `.github/workflows/build.yml`) does the same on every push. It also installs the
 installer, runs the installed app, and runs live checks against YouTube and Vimeo.
+
+### Publishing a new version
+
+1. Change `__version__` in `app/__init__.py` (for example to `2.0.1`) and commit.
+2. Tag that commit with the same version and push the tag:
+   `git tag v2.0.1 && git push origin v2.0.1`
+3. GitHub builds and tests both systems, then publishes the release with the Mac `.dmg` and both Windows
+   `.exe` files. The Download links above switch to it automatically.
 
 ### Changing the brand colors
 

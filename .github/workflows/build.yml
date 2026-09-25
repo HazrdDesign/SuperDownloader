@@ -7,8 +7,12 @@ name: build
 # Windows: built exactly as scripts\build.bat does on a PC, then the installer is installed and
 # every build self-tested. Mac: built as scripts/build_mac.sh does, installed from the .dmg and
 # self-tested. Both also run the live-site acceptance smoke tests.
+#
+# Releases: pushing a version tag (git tag v2.0.1 && git push origin v2.0.1) runs the same builds
+# and then publishes a GitHub Release with the three files, so people can download from the
+# repository's Releases section without a GitHub account. The tag must match app/__init__.py.
 on:
-  push:
+  push:          # every branch and every tag
   pull_request:
   workflow_dispatch:
 
@@ -191,3 +195,57 @@ jobs:
             build/installed-mac.json
             build/acceptance
           if-no-files-found: ignore
+
+  release:
+    name: Publish release
+    needs: [windows, mac]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release and upload its files
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the app version
+        run: |
+          app="v$(python3 -c 'import re; print(re.search(r"__version__ = \"(.+?)\"", open("app/__init__.py").read())[1])')"
+          if [ "$app" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the app version $app in app/__init__.py"; exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: SuperDownloader-Windows
+          path: release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: SuperDownloader-Mac
+          path: release
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la release
+          version="${GITHUB_REF_NAME#v}"
+          cat > notes.md <<NOTES
+          ## Download
+
+          | Your computer | File |
+          |---|---|
+          | **Mac** with an Apple chip (M1 or newer) | **SuperDownloader-mac.dmg** |
+          | **Windows** 10 or 11 | **SuperDownloader-Setup.exe** (installs it, recommended) |
+          | Windows, without installing | SuperDownloader-Portable.exe (a single file; starts more slowly) |
+
+          **Mac:** open the .dmg and drag Super Downloader onto Applications. The first time you open it, macOS says it
+          can't check the app: click **Done**, then **System Settings → Privacy & Security → Open Anyway**. Only once.
+
+          **Windows:** if Windows says "Windows protected your PC", click **More info → Run anyway**. Only once.
+
+          The app isn't signed by Apple or Microsoft yet, which is why those one-time warnings appear.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" \
+            release/SuperDownloader-mac.dmg release/SuperDownloader-Setup.exe release/SuperDownloader-Portable.exe \
+            --title "Super Downloader $version" --notes-file notes.md --verify-tag --latest
+
