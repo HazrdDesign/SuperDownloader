@@ -71,11 +71,11 @@ class ErrorInfo:
         return severity_of(self.status)
 
 
-LOGIN_HELP = (
-    "This video is private or members-only. Log into the site in your browser, "
-    "then choose that browser under 'Use login from'."
-)
 FIREFOX_FAMILY_HINT = "Firefox, Zen, LibreWolf or Floorp"
+LOGIN_HELP = (
+    f"This video is private or members-only. Log into the site in your browser ({FIREFOX_FAMILY_HINT}), "
+    "then click Retry."
+)
 
 MESSAGES = {
     Status.NEEDS_LOGIN: LOGIN_HELP,
@@ -91,7 +91,7 @@ MESSAGES = {
     ),
     Status.COOKIES_UNREADABLE: (
         "Windows security usually blocks reading logins from {browser}. For private videos, log in "
-        f"with {FIREFOX_FAMILY_HINT} and choose it under 'Use login from'."
+        f"with {FIREFOX_FAMILY_HINT} and choose it in Settings under 'Browser for logins'."
     ),
     Status.COOKIES_MISSING: (
         "Couldn't find a saved login in {browser}. Open it, log into the site, then click Retry."
@@ -384,11 +384,11 @@ def _message_for(status: Status, browser: str | None, password_given: bool,
                     f"{browser}, close {browser} completely, then click Retry.")
         if ("confirm you" in low and "bot" in low) or "only works when logged-in" in low:
             # The site asks for a login even for public videos (bot checks, some networks).
-            return ("The site wants you to sign in first. Log into it in your browser, then choose that "
-                    "browser under 'Use login from'.")
+            return (f"The site wants you to sign in first. Log into it in your browser ({FIREFOX_FAMILY_HINT}), "
+                    "then click Retry.")
         if "confirm your age" in low or "age-restricted" in low or "age restricted" in low:
-            return ("This video is age-restricted. Log into the site in your browser, then choose that "
-                    "browser under 'Use login from'.")
+            return (f"This video is age-restricted. Log into the site in your browser ({FIREFOX_FAMILY_HINT}), "
+                    "then click Retry.")
         return MESSAGES[status]
     if status is Status.NEEDS_PASSWORD and password_given:
         return "That password didn't work. Check it and click Retry."

@@ -1,4 +1,4 @@
-"""Find browser profiles whose saved login can be handed to yt-dlp ("Use login from").
+"""Find browser profiles whose saved login can be handed to yt-dlp (private/sign-in videos).
 
 Firefox-family browsers (Firefox, Zen, LibreWolf, Floorp) all store cookies in
 Firefox's ``cookies.sqlite`` format, so any of their profiles can be passed to

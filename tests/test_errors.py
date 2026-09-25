@@ -66,7 +66,8 @@ def test_needs_login(msg):
 
 def test_needs_login_message_when_no_browser():
     info = classify_error("This video is only available for registered users")
-    assert "Use login from" in info.message
+    assert "Retry" in info.message and "Zen" in info.message
+    assert "Use login from" not in info.message  # that dropdown no longer exists
 
 
 def test_needs_login_with_browser_selected_suggests_closing_browser():
