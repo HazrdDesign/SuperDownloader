@@ -1,6 +1,6 @@
 # Super Downloader
 
-A simple Windows app for downloading videos, made for dgnl.co. Paste a link and the app tells you
+A simple app for Windows and Mac for downloading videos, made for dgnl.co. Paste a link and the app tells you
 right away whether it will work. Pick a quality and a format, then download. It runs on
 [yt-dlp](https://github.com/yt-dlp/yt-dlp), with FFmpeg and Deno built in, so there's nothing else
 to install.
@@ -27,6 +27,25 @@ to install.
 
 ## Installing
 
+The app is built on GitHub for both systems every time the code changes.
+
+### Mac (Apple silicon: M1 or newer)
+
+Download from the latest **mac-build** run (Actions → newest green run → *Artifacts* → **SuperDownloader-mac**),
+unzip it, open **SuperDownloader-mac.dmg** and drag **Super Downloader** onto **Applications**.
+
+**The first time you open it**, macOS says it can't check the app for malicious software, because it isn't signed
+with an Apple developer certificate yet. Click **Done**, then open **System Settings → Privacy & Security**, scroll
+down and click **Open Anyway** next to "Super Downloader", and confirm. macOS remembers this.
+
+When a site needs a login, the app can read Chrome, Arc, Edge, Brave, Firefox and Zen logins on a Mac. The first time
+it reads a Chrome-based browser, macOS asks for your Mac password to allow access to "*Chrome* Safe Storage": choose
+**Always Allow**. Safari needs **Full Disk Access** for Super Downloader (System Settings → Privacy & Security).
+
+Settings, history and logs are in `~/Library/Application Support/SuperDownloader/`.
+
+### Windows
+
 Download from the latest **windows-build** run on GitHub (Actions → newest green run → *Artifacts* →
 **SuperDownloader**) and unzip it:
 
@@ -45,7 +64,7 @@ the first time Super Downloader starts.
 
 ## Using the app
 
-1. **Paste a link** with Ctrl+V, drag it onto the window, or copy it in your browser and switch to the app, which
+1. **Paste a link** with Ctrl+V (⌘V on a Mac), drag it onto the window, or copy it in your browser and switch to the app, which
    picks it up for you. The check starts on its own. When the link works, the video's title and thumbnail appear.
 2. If there's a problem, a message says what to do (the color shows whether you can fix it):
 
@@ -74,7 +93,7 @@ only uses one if the site asks. Either way it tries each browser in turn, the on
 and shows *Trying your login from Chrome…* while it does. The first one that works is used for the download and
 tried first for that site next time. If none works, the message says which browsers were tried and why.
 
-| | Windows | Mac (coming later) |
+| | Windows | Mac |
 |---|---|---|
 | Firefox, Zen, LibreWolf, Floorp | ✅ | ✅ |
 | Chrome, Edge, Brave, Arc, Vivaldi, Opera | ❌ Windows blocks reading their logins, so they're tried last | ✅ The Mac asks once: choose **Always Allow** |
@@ -133,6 +152,13 @@ Settings, history and logs are in `%APPDATA%\SuperDownloader\`. Passwords and co
 ---
 
 ## Building it yourself
+
+**Mac:** on an Apple silicon Mac with Python 3.11+ from [python.org](https://www.python.org/downloads/macos/)
+(it includes Tk), run `scripts/build_mac.sh`. It fetches the pinned FFmpeg 9.0.2 and Deno 2.9.6 builds
+(`scripts/fetch_tools_mac.sh`, checksums checked), runs the tests, builds `dist/Super Downloader.app`, self-tests it and
+makes `dist/SuperDownloader-mac.dmg`. GitHub Actions (`.github/workflows/mac-build.yml`) does the same on every push.
+
+**Windows:**
 
 You need **Windows 10/11** and **Python 3.11 or newer** (from [python.org](https://www.python.org/downloads/), with
 "Add python.exe to PATH" ticked). For the installer you also need
@@ -209,7 +235,8 @@ engine, the app uses the built-in one instead.
 ## Third-party software
 
 - **yt-dlp** and **yt-dlp-ejs**: Unlicense
-- **FFmpeg** 9.0.2 "essentials" build by Gyan Doshi ([gyan.dev](https://www.gyan.dev/ffmpeg/builds/)): GPL v3. The license
+- **FFmpeg** 9.0.2: on Windows the "essentials" build by Gyan Doshi ([gyan.dev](https://www.gyan.dev/ffmpeg/builds/)), on
+  Mac the static build by Martin Riedl ([ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de)). GPL v3; the license
   is included in the build. Source code: [ffmpeg.org](https://ffmpeg.org/download.html).
 - **Deno**: MIT. **CustomTkinter**: MIT. **Pillow**: MIT-CMU. **tkinterdnd2 / tkdnd**: MIT / BSD.
 

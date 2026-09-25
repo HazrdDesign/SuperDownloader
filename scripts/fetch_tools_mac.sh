@@ -2,7 +2,7 @@
 # Downloads the pinned third-party tools bundled into "Super Downloader.app" (Apple silicon)
 # and checks their SHA-256. Nothing is used unless the checksum matches.
 #
-#   - FFmpeg and FFprobe: static macOS arm64 builds by Martin Riedl (ffmpeg.martin-riedl.de,
+#   - FFmpeg and FFprobe 9.0.2: static macOS arm64 builds by Martin Riedl (ffmpeg.martin-riedl.de,
 #     listed on ffmpeg.org's download page). GPL v3 with libx264, like the Windows build.
 #                                                            -> vendor/ffmpeg/
 #   - Deno 2.9.6 from the official @deno/darwin-arm64 npm package. Checked against the
@@ -12,16 +12,17 @@
 #
 # To move to newer builds, change the URL and hash together.
 #
-# If an FFmpeg URL/hash below is empty, the script finds the newest release on the site instead and
-# prints its exact URL and SHA-256 so they can be pinned (the build still runs, with a warning).
+# To find a newer FFmpeg: empty FFMPEG_URL/FFPROBE_URL and their hashes; the script then picks the
+# newest release on the site and prints its exact URL and SHA-256 to pin here.
 #
 # Usage: scripts/fetch_tools_mac.sh [--force]
 set -euo pipefail
 
-FFMPEG_URL="${FFMPEG_URL:-}"
-FFMPEG_SHA256=""
-FFPROBE_URL="${FFPROBE_URL:-}"
-FFPROBE_SHA256=""
+FFMPEG_VERSION="9.0.2"   # same FFmpeg version as the Windows build
+FFMPEG_URL="https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip"
+FFMPEG_SHA256="c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924"
+FFPROBE_URL="https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffprobe.zip"
+FFPROBE_SHA256="fcbe839537485eaee7a7a8bc5cbc0f90d53617e80943e8a5b2e31cb851197ea6"
 FFMPEG_SITE="https://ffmpeg.martin-riedl.de"
 
 DENO_VERSION="2.9.6"

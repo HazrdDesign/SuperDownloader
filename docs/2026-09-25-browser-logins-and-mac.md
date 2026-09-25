@@ -74,16 +74,27 @@ browsers are still tried.
 2. Log into Vimeo in Zen, click **Retry**. It should reach Ready with *Using your login from Zen.*
 3. Paste another Vimeo link. Zen should be tried first (no *Trying…* line).
 
-## Still to do for the Mac version
+## The Mac version
 
-The code already handles Mac paths, *Show in folder* (`open -R`), ⌘V, the Downloads folder and browser locations.
-Still needed:
-- **Build:** a PyInstaller `.app` for Apple silicon and Intel (`--windowed`, `.icns` icon), built on a Mac or a
-  GitHub `macos-latest` runner.
-- **Bundled tools:** Mac builds of FFmpeg/FFprobe and Deno, with pinned checksums (`fetch_ffmpeg` for macOS).
-- **Signing:** an Apple Developer ID certificate, then signing and notarization. Without them, macOS Gatekeeper blocks the app
-  ("can't be opened because Apple cannot check it"), much like SmartScreen does on Windows.
-- **Installer:** a `.dmg` with a drag-to-Applications window instead of Inno Setup.
-- **Test on a real Mac:** Chrome and Arc Keychain prompts, Safari with Full Disk Access, drag and drop (tkdnd has a
-  Mac build), and the done sound (the window bell; there's no taskbar flash on a Mac).
-- **Engine updates:** they work the same way (`~/Library/Application Support/SuperDownloader/engine`).
+Built since 2026-09-25 for Apple silicon (M1 and newer), on every push, by `.github/workflows/mac-build.yml`
+(`scripts/build_mac.sh`). Download **SuperDownloader-mac** from the newest green *mac-build* run.
+
+**Checked automatically on GitHub's Apple silicon Mac:**
+- the whole test suite (234 passed, 2 Windows-only tests skipped)
+- the built app's self-test:
+  - FFmpeg 9.0.2 and Deno 2.9.6 are bundled
+  - an offline download as Original, MP3 and Edit-ready
+  - the window opens
+  - drag and drop loads
+- a copy installed from the `.dmg` passes the same self-test, and its signature checks out
+- the app loads an updated engine
+
+**Still to do:**
+- **Apple signing and notarization** (Apple Developer account, $99/year). Until then the first launch needs
+  System Settings → Privacy & Security → **Open Anyway**.
+- **Test on a real Mac:**
+  - the Keychain prompt for Chrome and Arc logins
+  - Safari with Full Disk Access
+  - dragging a link from the browser
+  - the done sound
+- **An Intel Mac build**, if anyone needs one (a second build on an Intel runner).
