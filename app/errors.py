@@ -176,6 +176,7 @@ _RULES: list[tuple[Status, tuple[str, ...]]] = [
     )),
     (Status.NEEDS_LOGIN, (
         r"only available for registered users",
+        r"only works when logged-?in",
         r"login required",
         r"log ?in (is )?required",
         r"requires? (a )?(login|authentication|subscription)",

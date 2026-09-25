@@ -187,8 +187,11 @@ def _selftest_window() -> str:
         from app.settings import Settings
         from app.ui_main import MainWindow
 
-        ctk.set_appearance_mode("dark")
-        win = MainWindow(Settings(), check_updates=False, save_settings=lambda s: None, warm_up_engine=False)
+        from app import theme
+        from app.history import History
+        theme.apply()
+        win = MainWindow(Settings(), check_updates=False, save_settings=lambda s: None, warm_up_engine=False,
+                         history=History(persist=False))
         win.withdraw()
         win.update()
         win.open_settings()
@@ -200,7 +203,10 @@ def _selftest_window() -> str:
 
 
 def run() -> int:
+    migrated_from = paths.migrate_legacy_data()  # before anything creates the new folder
     setup_logging()
+    if migrated_from:
+        log.info("Copied settings from %s", migrated_from)
     log.info("Starting (frozen=%s, python=%s)", bool(getattr(sys, "frozen", False)), sys.version.split()[0])
 
     # Must happen before anything imports yt_dlp.
@@ -212,8 +218,8 @@ def run() -> int:
     REDACTOR.attach(engine.redact)
 
     import customtkinter as ctk
-    ctk.set_appearance_mode("dark")
-    ctk.set_default_color_theme("blue")
+    from app import theme
+    theme.apply()
 
     from app.ui_main import MainWindow
 
@@ -224,7 +230,7 @@ def run() -> int:
         log.error("Unhandled UI error:\n%s", "".join(traceback.format_exception(exc, val, tb)))
         try:
             from tkinter import messagebox
-            messagebox.showerror("Video Downloader", "Something went wrong. Details were saved to the log "
+            messagebox.showerror("Super Downloader", "Something went wrong. Details were saved to the log "
                                                      "(Settings → Open logs).", parent=app)
         except Exception:  # noqa: BLE001
             pass

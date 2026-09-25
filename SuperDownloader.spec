@@ -1,4 +1,4 @@
-# PyInstaller build definition for VideoDownloader.exe (one file, no console window).
+# PyInstaller build definition for SuperDownloader.exe (one file, no console window).
 # Build with scripts\build.bat, which fetches vendor\ffmpeg and vendor\deno first.
 # -*- mode: python ; coding: utf-8 -*-
 
@@ -47,7 +47,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="VideoDownloader",
+    name="SuperDownloader",
     icon=str(ROOT / "assets" / "icon.ico"),
     console=False,
     upx=False,  # UPX-packed executables trigger more antivirus false positives

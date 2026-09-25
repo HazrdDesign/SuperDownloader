@@ -1,11 +1,11 @@
 @echo off
-rem Builds dist\VideoDownloader.exe from a clean checkout. Double-click or run from a prompt.
+rem Builds dist\SuperDownloader.exe from a clean checkout. Double-click or run from a prompt.
 rem Steps: find Python 3.11+ -> venv -> pip install -> fetch FFmpeg/Deno -> pytest -> PyInstaller -> self-test
 setlocal EnableExtensions
 cd /d "%~dp0.."
 
 echo.
-echo === Video Downloader build ===
+echo === Super Downloader build ===
 echo.
 
 rem ---- 1. Find Python 3.11 or newer -----------------------------------------------------------
@@ -48,7 +48,7 @@ echo Running tests ...
 
 rem ---- 6. Package --------------------------------------------------------------------------------
 echo Building the exe (this takes a few minutes) ...
-"%VPY%" -m PyInstaller --noconfirm --clean VideoDownloader.spec || goto :fail
+"%VPY%" -m PyInstaller --noconfirm --clean SuperDownloader.spec || goto :fail
 
 rem ---- 7. Self-test the exe (headless: engine, FFmpeg, Deno, offline download, windows) -----------
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\selftest.ps1" || (
@@ -57,7 +57,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\selftest.ps1" || (
 )
 
 echo.
-echo Done: %CD%\dist\VideoDownloader.exe
+echo Done: %CD%\dist\SuperDownloader.exe
 echo.
 if not defined CI pause
 exit /b 0

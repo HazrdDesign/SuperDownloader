@@ -13,16 +13,18 @@ from typing import Callable
 
 import customtkinter as ctk
 
-from . import browsers, paths, updater
-from .browsers import LOGIN_TOOLTIP, LoginSource
+from . import browsers, paths, theme, updater
+from .browsers import CUSTOM_LABEL, LOGIN_TOOLTIP, LoginSource
+from .engine import FORMATS, format_by_key
 from .errors import classify_error
 from .settings import QUALITY_CHOICES, QUALITY_LABELS, Settings, validate_folder
 from .ui_common import MUTED, PAD, Tooltip, elide_middle, link_label, open_folder, set_window_icon
 
 log = logging.getLogger(__name__)
 
-ERROR_COLOR = ("#c0392b", "#ff7b72")
-OK_COLOR = ("#1e8449", "#56d364")
+ERROR_COLOR = theme.ERROR
+OK_COLOR = theme.OK
+NEVER_LABEL = "Never use a browser login"
 
 
 def _set_text(label: ctk.CTkLabel, text: str, **kw) -> None:
@@ -47,8 +49,9 @@ class SettingsWindow(ctk.CTkToplevel):
         self._on_saved = on_saved
         self._on_engine_updated = on_engine_updated
         self._save_settings = save_settings
-        self._sources = [s for s in login_sources if not s.key.startswith("custom:")] + \
-                        [s for s in login_sources if s.key.startswith("custom:")]
+        self._sources = [s for s in login_sources if not s.is_none]
+        auto = browsers.automatic(login_sources)
+        self._auto_label = f"Automatic ({auto.label})" if not auto.is_none else "Automatic (none found yet)"
         self._events: queue.Queue = queue.Queue()
         self._update_info: updater.UpdateInfo | None = None
         self._folder = settings.save_folder
@@ -69,31 +72,47 @@ class SettingsWindow(ctk.CTkToplevel):
         self.folder_hint.grid(row=row, column=1, columnspan=2, sticky="w")
         row += 1
 
-        # -- default quality ----------------------------------------------------------------
+        # -- default quality + format -----------------------------------------------------------
         ctk.CTkLabel(body, text="Default quality").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=(10, 0))
         self.quality_menu = ctk.CTkOptionMenu(body, values=[QUALITY_LABELS[q] for q in QUALITY_CHOICES],
                                               dynamic_resizing=False)
         self.quality_menu.grid(row=row, column=1, columnspan=2, sticky="ew", pady=(10, 0))
         self.quality_menu.set(QUALITY_LABELS.get(settings.default_quality, QUALITY_LABELS["best"]))
         row += 1
+        ctk.CTkLabel(body, text="Default format").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=(10, 0))
+        self.format_menu = ctk.CTkOptionMenu(body, values=[f.label for f in FORMATS], dynamic_resizing=False)
+        self.format_menu.grid(row=row, column=1, columnspan=2, sticky="ew", pady=(10, 0))
+        self.format_menu.set(format_by_key(settings.default_format).label)
+        row += 1
 
-        # -- default login ------------------------------------------------------------------
-        lbl = ctk.CTkLabel(body, text="Default login source ⓘ")
+        # -- browser login ------------------------------------------------------------------
+        lbl = ctk.CTkLabel(body, text="Browser for logins ⓘ")
         lbl.grid(row=row, column=0, sticky="w", padx=(0, 12), pady=(10, 0))
-        Tooltip(lbl, LOGIN_TOOLTIP)
-        self.login_menu = ctk.CTkOptionMenu(body, values=[s.label for s in self._sources], dynamic_resizing=False,
-                                            command=lambda _v: self._update_login_note())
+        Tooltip(lbl, LOGIN_TOOLTIP + " Used for private or password-protected videos, and whenever a site asks "
+                     "you to sign in.")
+        self.login_menu = ctk.CTkOptionMenu(body, values=self._login_labels(), dynamic_resizing=False,
+                                            command=self._on_login_selected)
         self.login_menu.grid(row=row, column=1, columnspan=2, sticky="ew", pady=(10, 0))
-        current = browsers.from_key(settings.login_source, self._sources)
-        self.login_menu.set(current.label)
+        self._login_key = settings.login_source
+        self.login_menu.set(self._label_for_key(settings.login_source))
         row += 1
         self.login_note = ctk.CTkLabel(body, text="", text_color=MUTED, anchor="w", justify="left", wraplength=380)
         self.login_note.grid(row=row, column=1, columnspan=2, sticky="w")
         self._update_login_note()
         row += 1
 
+        # -- conveniences -------------------------------------------------------------------
+        self.copied_var = ctk.BooleanVar(value=settings.use_copied_links)
+        ctk.CTkCheckBox(body, text="Use a video link I just copied when I switch to the app",
+                        variable=self.copied_var).grid(row=row, column=1, columnspan=2, sticky="w", pady=(10, 0))
+        row += 1
+        self.notify_var = ctk.BooleanVar(value=settings.notify_when_done)
+        ctk.CTkCheckBox(body, text="Flash the taskbar and play a sound when a download finishes",
+                        variable=self.notify_var).grid(row=row, column=1, columnspan=2, sticky="w", pady=(6, 0))
+        row += 1
+
         # -- engine -------------------------------------------------------------------------
-        ctk.CTkFrame(body, height=1, fg_color=("gray75", "gray30")).grid(
+        ctk.CTkFrame(body, height=1, fg_color=theme.BORDER).grid(
             row=row, column=0, columnspan=3, sticky="ew", pady=14)
         row += 1
         ctk.CTkLabel(body, text="Downloader engine").grid(row=row, column=0, sticky="w", padx=(0, 12))
@@ -113,7 +132,7 @@ class SettingsWindow(ctk.CTkToplevel):
         row += 1
 
         # -- logs + buttons -----------------------------------------------------------------
-        ctk.CTkFrame(body, height=1, fg_color=("gray75", "gray30")).grid(
+        ctk.CTkFrame(body, height=1, fg_color=theme.BORDER).grid(
             row=row, column=0, columnspan=3, sticky="ew", pady=14)
         row += 1
         link_label(body, "Open logs", lambda: open_folder(paths.logs_dir())).grid(row=row, column=0, sticky="w")
@@ -122,6 +141,7 @@ class SettingsWindow(ctk.CTkToplevel):
         buttons = ctk.CTkFrame(body, fg_color="transparent")
         buttons.grid(row=row, column=2, sticky="e")
         ctk.CTkButton(buttons, text="Cancel", width=80, fg_color="transparent", border_width=1,
+                      border_color=theme.BORDER, text_color=theme.TEXT, hover_color=theme.SURFACE_2,
                       command=self.destroy).pack(side="left", padx=(0, 8))
         self.save_btn = ctk.CTkButton(buttons, text="Save", width=80, command=self.save)
         self.save_btn.pack(side="left")
@@ -164,11 +184,51 @@ class SettingsWindow(ctk.CTkToplevel):
 
     # -- login --------------------------------------------------------------------------------
 
+    def _login_labels(self) -> list[str]:
+        return [self._auto_label] + [s.label for s in self._sources] + [CUSTOM_LABEL, NEVER_LABEL]
+
+    def _label_for_key(self, key: str) -> str:
+        if not key or key == browsers.AUTO_KEY:
+            return self._auto_label
+        if key == browsers.NONE_KEY:
+            return NEVER_LABEL
+        src = browsers.from_key(key, self._sources)
+        if src.is_none:
+            return self._auto_label
+        if src.key not in {s.key for s in self._sources}:
+            self._sources.append(src)
+            self.login_menu.configure(values=self._login_labels())
+        return src.label
+
+    def _on_login_selected(self, label: str) -> None:
+        if label == CUSTOM_LABEL:
+            folder = filedialog.askdirectory(parent=self, title="Choose a browser profile folder", mustexist=True)
+            src = browsers.custom_source(folder) if folder else None
+            if not src:
+                if folder:
+                    _set_text(self.login_note, "That folder has no saved browser login (cookies.sqlite). Choose a "
+                                               "Firefox, Zen, LibreWolf or Floorp profile folder.")
+                self.login_menu.set(self._label_for_key(self._login_key))
+                return
+            self._sources.append(src)
+            self.login_menu.configure(values=self._login_labels())
+            self.login_menu.set(src.label)
+            self._login_key = src.key
+        elif label == self._auto_label:
+            self._login_key = browsers.AUTO_KEY
+        elif label == NEVER_LABEL:
+            self._login_key = browsers.NONE_KEY
+        else:
+            self._login_key = next((s.key for s in self._sources if s.label == label), browsers.AUTO_KEY)
+        self._update_login_note()
+
     def _selected_source(self) -> LoginSource:
-        label = self.login_menu.get()
-        return next((s for s in self._sources if s.label == label), browsers.NONE_SOURCE)
+        return browsers.resolve(self._login_key, self._sources)
 
     def _update_login_note(self) -> None:
+        if self._login_key == browsers.NONE_KEY:
+            _set_text(self.login_note, "Private videos won't download. Sites that ask for a login will show a message.")
+            return
         _set_text(self.login_note, self._selected_source().note)
 
     # -- engine update ------------------------------------------------------------------------
@@ -243,12 +303,16 @@ class SettingsWindow(ctk.CTkToplevel):
                 return
         quality_label = self.quality_menu.get()
         quality = next((k for k, v in QUALITY_LABELS.items() if v == quality_label), "best")
+        fmt = next((f.key for f in FORMATS if f.label == self.format_menu.get()), "original")
         new = dataclasses.replace(
             self._original,
             save_folder=folder,
             default_quality=quality,
-            login_source=self._selected_source().key,
+            default_format=fmt,
+            login_source=self._login_key or browsers.AUTO_KEY,
             check_updates_on_launch=bool(self.auto_update_var.get()),
+            use_copied_links=bool(self.copied_var.get()),
+            notify_when_done=bool(self.notify_var.get()),
         )
         try:
             self._save_settings(new)
@@ -256,8 +320,8 @@ class SettingsWindow(ctk.CTkToplevel):
             log.warning("Could not save settings: %s", e)
             self.error_label.configure(text="Couldn't save settings.")
             return
-        log.info("Settings saved (quality=%s, login=%s, custom folder=%s)", quality,
-                 "none" if self._selected_source().is_none else self._selected_source().app_name,
+        log.info("Settings saved (quality=%s, format=%s, login=%s, custom folder=%s)", quality, fmt,
+                 new.login_source if new.login_source in ("auto", "none") else self._selected_source().app_name,
                  "yes" if folder else "no")
         self._on_saved(new)
         self.destroy()

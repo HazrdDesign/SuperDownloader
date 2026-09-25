@@ -12,20 +12,21 @@ from pathlib import Path
 import customtkinter as ctk
 
 from . import paths
+from . import theme
 from .errors import Severity
 
 log = logging.getLogger(__name__)
 
-# Banner colors: (background, accent) per severity, tuned for the dark theme.
+# Banner colors: (background, accent) per severity. Status colors come from the theme.
 BANNER_COLORS = {
-    Severity.OK: ("#12351f", "#2fbf71"),
-    Severity.WARN: ("#3a3212", "#e5b93a"),
-    Severity.ERROR: ("#3d1717", "#e5534b"),
+    Severity.OK: (theme.OK_BG, theme.OK),
+    Severity.WARN: (theme.WARN_BG, theme.WARN),
+    Severity.ERROR: (theme.ERROR_BG, theme.ERROR),
 }
 # A colored dot in the accent color (Tk 8.6 cannot reliably draw emoji on Windows).
 BANNER_DOT = "●"
-MUTED = ("gray40", "gray65")
-LINK = ("#1f6aa5", "#6cb4ee")
+MUTED = theme.MUTED
+LINK = theme.ACCENT
 PAD = 16
 
 
@@ -57,8 +58,8 @@ class Tooltip:
         self._tip = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
-        tk.Label(tw, text=self.text, justify="left", wraplength=self.wrap, background="#2b2b2b",
-                 foreground="#eeeeee", relief="solid", borderwidth=1, padx=8, pady=6,
+        tk.Label(tw, text=self.text, justify="left", wraplength=self.wrap, background=theme.SURFACE_2,
+                 foreground=theme.TEXT, relief="solid", borderwidth=1, padx=8, pady=6,
                  font=("Segoe UI", 9) if sys.platform == "win32" else None).pack()
 
     def _hide(self, _event=None):
@@ -122,3 +123,36 @@ def link_label(master, text: str, command) -> ctk.CTkLabel:
     lbl = ctk.CTkLabel(master, text=text, text_color=LINK, cursor="hand2")
     lbl.bind("<Button-1>", lambda _e: command())
     return lbl
+
+
+def notify_done(window: tk.Misc) -> None:
+    """Get the user's attention when a download finishes while they're in another app:
+    flash the taskbar button and play the system notification sound."""
+    try:
+        focused = window.focus_displayof() is not None
+    except (tk.TclError, KeyError):
+        focused = False
+    if focused:
+        return
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            import winsound
+            from ctypes import wintypes
+
+            class FLASHWINFO(ctypes.Structure):
+                _fields_ = [("cbSize", wintypes.UINT), ("hwnd", wintypes.HWND), ("dwFlags", wintypes.DWORD),
+                            ("uCount", wintypes.UINT), ("dwTimeout", wintypes.DWORD)]
+
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+            FLASHW_ALL, FLASHW_TIMERNOFG = 0x3, 0xC  # flash until the window comes to the front
+            info = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0)
+            ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
+            winsound.MessageBeep(0x40)  # MB_ICONASTERISK: the "notification" sound
+        except Exception as e:  # noqa: BLE001 - attention is best-effort
+            log.debug("Could not flash the window: %s", e)
+    else:
+        try:
+            window.bell()
+        except tk.TclError:
+            pass

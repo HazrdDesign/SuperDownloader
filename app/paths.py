@@ -6,25 +6,59 @@ import os
 import sys
 from pathlib import Path
 
-APP_NAME = "VideoDownloader"
+APP_NAME = "SuperDownloader"
+# Folder names used by earlier versions; their settings are copied over on first launch.
+LEGACY_APP_NAMES = ("VideoDownloader",)
 
 # FOLDERID_Downloads, see https://learn.microsoft.com/windows/win32/shell/knownfolderid
 _FOLDERID_DOWNLOADS = "{374DE290-123F-4565-9164-39C4925E467B}"
 
 
 def app_data_dir() -> Path:
-    """``%APPDATA%\\VideoDownloader`` on Windows; an XDG-style folder elsewhere.
+    """``%APPDATA%\\SuperDownloader`` on Windows; an XDG-style folder elsewhere.
 
     ``VD_APPDATA`` overrides the location (used by tests and CI).
     """
     override = os.environ.get("VD_APPDATA")
     if override:
-        base = Path(override)
-    elif sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / APP_NAME
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / APP_NAME
-    return base
+        return Path(override)
+    return _roaming_root() / APP_NAME
+
+
+def _roaming_root() -> Path:
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+
+
+def migrate_legacy_data() -> Path | None:
+    """Copy settings, history and the downloaded engine from an older app folder.
+
+    Runs once: only when the new folder doesn't exist yet. Returns the folder copied from.
+    """
+    import shutil
+
+    if os.environ.get("VD_APPDATA"):
+        return None
+    new = app_data_dir()
+    if new.exists():
+        return None
+    for name in LEGACY_APP_NAMES:
+        old = _roaming_root() / name
+        if not old.is_dir():
+            continue
+        new.mkdir(parents=True, exist_ok=True)
+        for item in ("settings.json", "history.json", "engine"):
+            src = old / item
+            try:
+                if src.is_dir():
+                    shutil.copytree(src, new / item)
+                elif src.is_file():
+                    shutil.copy2(src, new / item)
+            except OSError:
+                pass
+        return old
+    return None
 
 
 def settings_file() -> Path:

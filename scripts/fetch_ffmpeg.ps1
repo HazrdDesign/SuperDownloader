@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Downloads the pinned third-party binaries that get bundled into VideoDownloader.exe and
+  Downloads the pinned third-party binaries that get bundled into SuperDownloader.exe and
   verifies their SHA-256 checksums. Nothing is used unless the checksum matches.
 
   - FFmpeg 9.0.2 "essentials" build by Gyan Doshi (ffmpeg.exe, ffprobe.exe) -> vendor\ffmpeg\

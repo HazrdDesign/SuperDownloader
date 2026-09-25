@@ -225,6 +225,27 @@ def all_sources(appdata: Path | None = None, localappdata: Path | None = None,
     return [NONE_SOURCE, *detect_firefox_profiles(appdata, home), *detect_chromium(localappdata)]
 
 
+AUTO_KEY = "auto"
+
+
+def automatic(sources: list[LoginSource]) -> LoginSource:
+    """The browser login used by default: the most recently used Firefox-family profile.
+
+    Chrome/Edge/Brave are never picked automatically (Windows usually blocks reading them).
+    """
+    for s in sources:
+        if s.ydl_browser == "firefox":
+            return s
+    return NONE_SOURCE
+
+
+def resolve(key: str | None, sources: list[LoginSource]) -> LoginSource:
+    """Like :func:`from_key`, but understands the "auto" setting."""
+    if not key or key == AUTO_KEY:
+        return automatic(sources)
+    return from_key(key, sources)
+
+
 def from_key(key: str | None, sources: list[LoginSource]) -> LoginSource:
     """Find the saved login source; fall back to None if it no longer exists."""
     if not key or key == NONE_KEY:

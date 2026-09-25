@@ -79,6 +79,17 @@ def media_dir(tmp_path_factory):
         "<html><head><title>Two clips</title></head><body>"
         "<video src='clip.mp4'></video><video src='clip2.mp4'></video></body></html>", encoding="utf-8")
     shutil.copy(d / "clip.mp4", d / "clip2.mp4")
+    # A page with a poster image and English subtitles (HTML5 <track>), for JPG + subtitle tests.
+    subprocess.run(common + ["-f", "lavfi", "-i", "testsrc=size=1280x720:duration=1", "-frames:v", "1",
+                             str(d / "poster.png")], check=True)
+    (d / "subs.vtt").write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello there\n\n00:00:02.000 --> 00:00:05.000\n"
+        "Second line\n", encoding="utf-8")
+    (d / "withsubs.html").write_text(
+        "<html><head><title>Clip with subtitles</title>"
+        "<meta property='og:image' content='poster.png'></head><body>"
+        "<video src='clip.mp4' poster='poster.png'><track kind='subtitles' src='subs.vtt' srclang='en' "
+        "label='English'></video></body></html>", encoding="utf-8")
     (d / "novideo.html").write_text(
         "<html><head><title>Just text</title></head><body><p>Hello, no video here.</p></body></html>",
         encoding="utf-8")
@@ -97,7 +108,43 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
     def translate_path(self, path):
         return super().translate_path(path.replace("/dashslow/", "/dash/", 1))
 
+    def send_head(self):
+        """Adds HTTP Range support (FFmpeg seeks with it, e.g. for clip downloads)."""
+        rng = self.headers.get("Range", "")
+        path = self.translate_path(self.path)
+        if not rng.startswith("bytes=") or os.path.isdir(path) or not os.path.isfile(path):
+            return super().send_head()
+        size = os.path.getsize(path)
+        start_s, _, end_s = rng[6:].split(",")[0].partition("-")
+        if start_s:
+            start = int(start_s)
+            end = min(int(end_s), size - 1) if end_s else size - 1
+        else:  # suffix range: last N bytes
+            start, end = max(0, size - int(end_s)), size - 1
+        if start >= size:
+            self.send_error(416)
+            return None
+        f = open(path, "rb")
+        f.seek(start)
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+        self._range_left = end - start + 1
+        return f
+
     def copyfile(self, source, outputfile):
+        left = getattr(self, "_range_left", None)
+        if left is None:
+            return self._copy(source, outputfile)
+        self._range_left = None
+        while left > 0 and (chunk := source.read(min(64 * 1024, left))):
+            outputfile.write(chunk)
+            left -= len(chunk)
+
+    def _copy(self, source, outputfile):
         if self.path.startswith("/dashslow/") or any(self.path.endswith(n) for n in self.slow_names):
             while chunk := source.read(64 * 1024):
                 outputfile.write(chunk)

@@ -1,4 +1,9 @@
-"""Main window: paste a link, see whether it works, pick a quality, download."""
+"""Main window: paste a link, see whether it works, pick a quality and format, download.
+
+Downloads go through a queue (app/jobs.py). A download started from the form is shown in
+the form (progress, then "Saved"); anything added while something is running, or pasted
+as a batch of links, waits in the Queue panel. Finished downloads go to History.
+"""
 
 from __future__ import annotations
 
@@ -9,29 +14,41 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import messagebox
 from typing import Callable
 from urllib.parse import urlparse
 
 import customtkinter as ctk
 
-from . import browsers, settings as settings_mod, updater
-from .browsers import CUSTOM_LABEL, LOGIN_TOOLTIP, LoginSource
+from . import browsers, history as history_mod, settings as settings_mod, theme, updater
+from .browsers import LoginSource
 from .engine import (
+    FORMATS_BY_KEY,
     CheckRequest,
     CheckResult,
     DownloadJob,
     DownloadResult,
     Engine,
+    OutputFormat,
     Progress,
+    Quality,
+    SubtitleChoice,
     default_quality,
+    extract_urls,
     fetch_thumbnail,
+    format_by_key,
+    format_timecode,
     human_duration,
     human_size,
     normalize_url,
+    parse_timecode,
+    project_parts,
+    project_prefix,
     safe_folder_name,
 )
 from .errors import ErrorInfo, Severity, Status
+from .history import History, HistoryEntry
+from .jobs import JobQueue, QueuedJob
 from .settings import Settings
 from .ui_common import (
     BANNER_COLORS,
@@ -41,52 +58,77 @@ from .ui_common import (
     Tooltip,
     elide_middle,
     link_label,
+    notify_done,
     set_window_icon,
     show_in_folder,
 )
 
 log = logging.getLogger(__name__)
 
-APP_TITLE = "Video Downloader"
+APP_TITLE = "Super Downloader"
 DEBOUNCE_MS = 600
 POLL_MS = 50
-MIN_WIDTH = 520
+MIN_WIDTH = 540
+HISTORY_ROWS_SHOWN = 50
+NO_SUBTITLES = "No subtitles"
 
 LOGIN_STATES = {Status.NEEDS_LOGIN, Status.COOKIES_LOCKED, Status.COOKIES_UNREADABLE, Status.COOKIES_MISSING}
+LOGIN_HOSTS = ("vimeo.com",)  # sites where the login option is offered up front
 
 # Sections in the order they appear on screen.
-SECTIONS = ("header", "url", "spinner", "banner", "login", "password", "referer", "preview",
-            "playlist", "options", "download", "progress", "done", "update")
+SECTIONS = ("header", "url", "spinner", "banner", "login", "password", "referer", "preview", "playlist",
+            "options", "more", "download", "progress", "done", "queue", "update", "history")
+
+try:  # drag and drop of links onto the window (optional; the app works without it)
+    from tkinterdnd2 import DND_TEXT, TkinterDnD
+    _DnDBase = TkinterDnD.DnDWrapper
+except Exception:  # noqa: BLE001
+    TkinterDnD = None
+    DND_TEXT = None
+    _DnDBase = object
 
 
-class MainWindow(ctk.CTk):
+def _is_login_host(url: str | None) -> bool:
+    host = (urlparse(url or "").hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in LOGIN_HOSTS)
+
+
+class MainWindow(ctk.CTk, _DnDBase):
     def __init__(self, settings: Settings, engine: Engine | None = None, *,
                  login_sources: list[LoginSource] | None = None, check_updates: bool | None = None,
-                 save_settings: Callable[[Settings], None] | None = None, warm_up_engine: bool = True):
+                 save_settings: Callable[[Settings], None] | None = None, warm_up_engine: bool = True,
+                 history: History | None = None):
         super().__init__()
         # Background threads run CPU-heavy yt-dlp code. A short GIL switch interval keeps
         # Tk's many small Python callbacks from queueing behind it (default is 5 ms).
         sys.setswitchinterval(0.001)
         self.settings = settings
         self.engine = engine or Engine()
+        engine_factory = (lambda: engine) if engine is not None else Engine
         self._save_settings = save_settings or settings_mod.save
         self.events: queue.Queue = queue.Queue()
+        self.queue = JobQueue(engine_factory, lambda kind, payload: self.events.put((kind, None, payload)))
+        self.history = history if history is not None else History()
         self.stage = "empty"  # empty, checking, checked, downloading, done
         self.result: CheckResult | None = None
         self.last_error: ErrorInfo | None = None
         self.saved_files: list[Path] = []
         self.folder_override: Path | None = None
+        self.focus_job: QueuedJob | None = None       # the download shown in the form
         self._token = 0
         self._debounce: str | None = None
         self._checked_url: str | None = None
-        self._download_thread: threading.Thread | None = None
         self._visible: set[str] = {"header", "url"}
         self._thumb_image: ctk.CTkImage | None = None
         self._blank_thumb: ctk.CTkImage | None = None
+        self._redo: HistoryEntry | None = None         # options to restore after a history re-check
+        self._last_clipboard: str | None = None
+        self._queue_rows: dict[int, dict] = {}
+        self._more_open = False
         self.banner_status: Status | None = None
 
         self.login_sources = login_sources if login_sources is not None else browsers.all_sources()
-        self.login = browsers.from_key(settings.login_source, self.login_sources)
+        self.login_source = browsers.resolve(settings.login_source, self.login_sources)
 
         self.title(APP_TITLE)
         set_window_icon(self)
@@ -94,6 +136,8 @@ class MainWindow(ctk.CTk):
         self._restore_geometry()
         self._build()
         self._bind_keys()
+        self._enable_drag_and_drop()
+        self._refresh_history()
         self._relayout()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._poll_id = self.after(POLL_MS, self._poll)
@@ -117,8 +161,10 @@ class MainWindow(ctk.CTk):
         self.body = ctk.CTkFrame(self, fg_color="transparent")
         self.body.grid(row=0, column=0, sticky="nsew", padx=PAD, pady=(PAD - 4, PAD))
         self.body.grid_columnconfigure(0, weight=1)
-        b = self.body
         self.sections: dict[str, ctk.CTkFrame] = {}
+        secondary = {"fg_color": "transparent", "border_width": 1, "border_color": theme.BORDER,
+                     "text_color": theme.TEXT, "hover_color": theme.SURFACE_2}
+        self._secondary = secondary
 
         # -- header -------------------------------------------------------------------------
         header = self._section("header")
@@ -126,8 +172,8 @@ class MainWindow(ctk.CTk):
         ctk.CTkLabel(header, text=APP_TITLE, font=ctk.CTkFont(size=18, weight="bold")).grid(
             row=0, column=0, sticky="w")
         self.settings_btn = ctk.CTkButton(header, text="⚙", width=36, height=32, font=ctk.CTkFont(size=18),
-                                          fg_color="transparent", hover_color=("gray80", "gray25"),
-                                          command=self.open_settings)
+                                          fg_color="transparent", hover_color=theme.SURFACE_2,
+                                          text_color=theme.TEXT, command=self.open_settings)
         self.settings_btn.grid(row=0, column=1, sticky="e")
         Tooltip(self.settings_btn, "Settings")
 
@@ -136,12 +182,12 @@ class MainWindow(ctk.CTk):
         url.grid_columnconfigure(0, weight=1)
         self.url_var = tk.StringVar()
         self.url_entry = ctk.CTkEntry(url, textvariable=self.url_var, height=38,
-                                      placeholder_text="Paste a video link here")
+                                      placeholder_text="Paste a video link (or several) here")
         self.url_entry.grid(row=0, column=0, sticky="ew")
         self.paste_btn = ctk.CTkButton(url, text="Paste", width=70, height=38, command=self.paste_url)
         self.paste_btn.grid(row=0, column=1, padx=(8, 0))
         self.check_btn = ctk.CTkButton(url, text="Check", width=70, height=38, command=self.start_check,
-                                       fg_color="transparent", border_width=1)
+                                       **secondary)
         self.check_btn.grid(row=0, column=2, padx=(8, 0))
         self.url_var.trace_add("write", self._on_url_changed)
 
@@ -163,20 +209,16 @@ class MainWindow(ctk.CTk):
         self.details_box = ctk.CTkTextbox(banner, height=110, wrap="word", font=ctk.CTkFont(family="Consolas", size=11))
         banner.bind("<Configure>", self._on_banner_resize)
 
-        # -- login --------------------------------------------------------------------------
+        # -- login: one checkbox, no browser choice here (that's in Settings) ------------------
         login = self._section("login")
-        login.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(login, text="Use login from").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.login_menu = ctk.CTkOptionMenu(login, values=self._login_labels(), command=self._on_login_selected,
-                                            dynamic_resizing=False)
-        self.login_menu.grid(row=0, column=1, sticky="ew")
-        info = ctk.CTkLabel(login, text="ⓘ", text_color=MUTED, width=20, cursor="question_arrow")
-        info.grid(row=0, column=2, padx=(6, 0))
-        Tooltip(info, LOGIN_TOOLTIP)
+        login.grid_columnconfigure(0, weight=1)
+        self.use_login_var = tk.BooleanVar(value=False)
+        self.login_check = ctk.CTkCheckBox(login, text="", variable=self.use_login_var)
+        self.login_check.grid(row=0, column=0, sticky="w")
         self.login_retry = ctk.CTkButton(login, text="Retry", width=70, command=self.retry)
         self.login_note = ctk.CTkLabel(login, text="", text_color=MUTED, justify="left", anchor="w", wraplength=440)
-        self.login_menu.set(self.login.label)
-        self._update_login_note()
+        Tooltip(self.login_check, browsers.LOGIN_TOOLTIP)
+        self._update_login_row()
 
         # -- password -----------------------------------------------------------------------
         pw = self._section("password")
@@ -201,9 +243,9 @@ class MainWindow(ctk.CTk):
         self.referer_entry.bind("<Return>", lambda _e: (self.retry(), "break")[1])
 
         # -- preview ------------------------------------------------------------------------
-        prev = self._section("preview", corner_radius=8, fg_color=("gray90", "gray17"))
+        prev = self._section("preview", corner_radius=8, fg_color=theme.SURFACE)
         prev.grid_columnconfigure(1, weight=1)
-        self.thumb_label = ctk.CTkLabel(prev, text="", width=160, height=90, fg_color=("gray80", "gray22"),
+        self.thumb_label = ctk.CTkLabel(prev, text="", width=160, height=90, fg_color=theme.SURFACE_2,
                                         corner_radius=6)
         self.thumb_label.grid(row=0, column=0, rowspan=2, padx=10, pady=10, sticky="nw")
         self.title_label = ctk.CTkLabel(prev, text="", font=ctk.CTkFont(size=14, weight="bold"),
@@ -220,17 +262,53 @@ class MainWindow(ctk.CTk):
         self.playlist_choice = ctk.CTkSegmentedButton(pl, values=["Just this video", "All videos"])
         self.playlist_choice.grid(row=1, column=0, sticky="w", pady=(6, 0))
 
-        # -- options (quality + save to) ------------------------------------------------------
+        # -- options: quality, format, save to --------------------------------------------------
         opt = self._section("options")
         opt.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(opt, text="Quality").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.quality_label = ctk.CTkLabel(opt, text="Quality")
+        self.quality_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.quality_menu = ctk.CTkOptionMenu(opt, values=["—"], dynamic_resizing=False)
         self.quality_menu.grid(row=0, column=1, columnspan=2, sticky="ew")
-        ctk.CTkLabel(opt, text="Save to").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ctk.CTkLabel(opt, text="Format").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        self.format_menu = ctk.CTkOptionMenu(opt, values=["—"], dynamic_resizing=False,
+                                             command=lambda _v: self._on_format_changed())
+        self.format_menu.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+        ctk.CTkLabel(opt, text="Save to").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
         self.folder_label = ctk.CTkLabel(opt, text="", anchor="w", text_color=MUTED)
-        self.folder_label.grid(row=1, column=1, sticky="ew", pady=(8, 0))
-        ctk.CTkButton(opt, text="Change", width=70, fg_color="transparent", border_width=1,
-                      command=self.change_folder).grid(row=1, column=2, padx=(8, 0), pady=(8, 0))
+        self.folder_label.grid(row=2, column=1, sticky="ew", pady=(8, 0))
+        ctk.CTkButton(opt, text="Change", width=70, command=self.change_folder, **secondary).grid(
+            row=2, column=2, padx=(8, 0), pady=(8, 0))
+        self.more_link = link_label(opt, "More options ▸", self.toggle_more)
+        self.more_link.grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+        # -- more options: clip, subtitles, project ---------------------------------------------
+        more = self._section("more", corner_radius=8, fg_color=theme.SURFACE)
+        more.grid_columnconfigure(1, weight=1)
+        self.clip_var = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(more, text="Only part of the video", variable=self.clip_var,
+                        command=self._on_clip_toggled).grid(row=0, column=0, columnspan=2, sticky="w", padx=12,
+                                                            pady=(12, 0))
+        clip_row = ctk.CTkFrame(more, fg_color="transparent")
+        self.clip_row = clip_row
+        ctk.CTkLabel(clip_row, text="From").pack(side="left")
+        self.clip_start = ctk.CTkEntry(clip_row, width=80, placeholder_text="0:00")
+        self.clip_start.pack(side="left", padx=6)
+        ctk.CTkLabel(clip_row, text="to").pack(side="left")
+        self.clip_end = ctk.CTkEntry(clip_row, width=80, placeholder_text="1:00")
+        self.clip_end.pack(side="left", padx=6)
+        ctk.CTkLabel(clip_row, text="(minutes:seconds)", text_color=MUTED).pack(side="left", padx=4)
+        self.subs_label = ctk.CTkLabel(more, text="Subtitles")
+        self.subs_label.grid(row=2, column=0, sticky="w", padx=(12, 8), pady=(10, 0))
+        self.subs_menu = ctk.CTkOptionMenu(more, values=[NO_SUBTITLES], dynamic_resizing=False)
+        self.subs_menu.grid(row=2, column=1, sticky="ew", padx=(0, 12), pady=(10, 0))
+        ctk.CTkLabel(more, text="Project").grid(row=3, column=0, sticky="w", padx=(12, 8), pady=(10, 12))
+        self.project_box = ctk.CTkComboBox(more, values=self.settings.recent_projects or [""],
+                                           command=lambda _v: self._refresh_folder_label())
+        self.project_box.set("")
+        self.project_box.grid(row=3, column=1, sticky="ew", padx=(0, 12), pady=(10, 12))
+        self.project_box._entry.bind("<KeyRelease>", lambda _e: self._refresh_folder_label(), add="+")
+        Tooltip(self.project_box, "Optional. Type \"Client / Project\": files go into that folder and are "
+                                  "named Client_Project_date_Title.")
 
         # -- download -----------------------------------------------------------------------
         dl = self._section("download")
@@ -245,22 +323,30 @@ class MainWindow(ctk.CTk):
         self.progress_bar = ctk.CTkProgressBar(prog, height=12)
         self.progress_bar.grid(row=0, column=0, sticky="ew")
         self.progress_bar.set(0)
-        self.cancel_btn = ctk.CTkButton(prog, text="Cancel", width=80, fg_color="transparent", border_width=1,
-                                        command=self.cancel_download)
+        self.cancel_btn = ctk.CTkButton(prog, text="Cancel", width=80, command=self.cancel_download, **secondary)
         self.cancel_btn.grid(row=0, column=1, padx=(10, 0))
         self.progress_text = ctk.CTkLabel(prog, text="", text_color=MUTED, anchor="w")
         self.progress_text.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
         # -- done ---------------------------------------------------------------------------
-        done = self._section("done", corner_radius=8, fg_color=BANNER_COLORS[Severity.OK][0])
+        done = self._section("done", corner_radius=8, fg_color=theme.OK_BG)
         done.grid_columnconfigure(0, weight=1)
         self.done_text = ctk.CTkLabel(done, text="", justify="left", anchor="w", wraplength=460,
                                       font=ctk.CTkFont(weight="bold"))
         self.done_text.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(10, 6))
         self.show_btn = ctk.CTkButton(done, text="Show in folder", command=self.show_saved)
         self.show_btn.grid(row=1, column=0, sticky="w", padx=12, pady=(0, 12))
-        ctk.CTkButton(done, text="Download another", fg_color="transparent", border_width=1,
-                      command=self.download_another).grid(row=1, column=1, sticky="e", padx=12, pady=(0, 12))
+        ctk.CTkButton(done, text="Download another", command=self.download_another, **secondary).grid(
+            row=1, column=1, sticky="e", padx=12, pady=(0, 12))
+
+        # -- queue --------------------------------------------------------------------------
+        q = self._section("queue")
+        q.grid_columnconfigure(0, weight=1)
+        self.queue_title = ctk.CTkLabel(q, text="Queue", font=ctk.CTkFont(weight="bold"), anchor="w")
+        self.queue_title.grid(row=0, column=0, sticky="w")
+        self.queue_list = ctk.CTkFrame(q, fg_color=theme.SURFACE, corner_radius=8)
+        self.queue_list.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.queue_list.grid_columnconfigure(0, weight=1)
 
         # -- engine update notice -----------------------------------------------------------
         upd = self._section("update")
@@ -271,8 +357,20 @@ class MainWindow(ctk.CTk):
         self.update_btn.grid(row=0, column=1, padx=(8, 0))
         self._pending_update: updater.UpdateInfo | None = None
 
+        # -- history ------------------------------------------------------------------------
+        h = self._section("history")
+        h.grid_columnconfigure(0, weight=1)
+        head = ctk.CTkFrame(h, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew")
+        head.grid_columnconfigure(0, weight=1)
+        self.history_title = ctk.CTkLabel(head, text="History", font=ctk.CTkFont(weight="bold"), anchor="w")
+        self.history_title.grid(row=0, column=0, sticky="w")
+        link_label(head, "Clear", self.clear_history).grid(row=0, column=1, sticky="e")
+        self.history_list = ctk.CTkScrollableFrame(h, height=170, fg_color=theme.SURFACE, corner_radius=8)
+        self.history_list.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self.history_list.grid_columnconfigure(0, weight=1)
+
         self._refresh_folder_label()
-        del b
 
     def _section(self, name: str, **kw) -> ctk.CTkFrame:
         kw.setdefault("fg_color", "transparent")
@@ -285,14 +383,22 @@ class MainWindow(ctk.CTk):
             (self._visible.add if visible else self._visible.discard)(n)
 
     def _only(self, *names: str) -> None:
-        """Show exactly the header, URL row and the given sections."""
+        """Show exactly the header, URL row and the given sections (plus the always-on panels)."""
         self._visible = {"header", "url", *names}
         if self._pending_update is not None or self.update_text.cget("text"):
             self._visible.add("update")
 
     def _relayout(self) -> None:
-        if "login" in self._visible and self.login.is_none and not self._login_needed():
-            self._visible.discard("login")
+        if any(j is not self.focus_job for j in self.queue.active()):
+            self._visible.add("queue")
+        else:
+            self._visible.discard("queue")
+        if self.history.entries:
+            self._visible.add("history")
+        else:
+            self._visible.discard("history")
+        if not self._more_open or "options" not in self._visible:
+            self._visible.discard("more")
         for i, name in enumerate(SECTIONS):
             frame = self.sections[name]
             if name in self._visible:
@@ -349,6 +455,12 @@ class MainWindow(ctk.CTk):
             self.details_link.grid_remove()
         self._set_visible("banner")
 
+    def _warn(self, message: str) -> None:
+        self.show_banner(ErrorInfo(Status.UNKNOWN, message))
+        self.banner.configure(fg_color=theme.WARN_BG)
+        self.banner_dot.configure(text_color=theme.WARN)
+        self._relayout()
+
     def toggle_details(self) -> None:
         if self.details_box.winfo_ismapped():
             self.details_box.grid_remove()
@@ -367,23 +479,29 @@ class MainWindow(ctk.CTk):
             text = self.clipboard_get()
         except tk.TclError:
             text = ""
-        if self.stage == "downloading":
+        self.accept_text(text)
+
+    def accept_text(self, text: str) -> None:
+        """Handle pasted or dropped text: one link is checked, several go straight to the queue."""
+        text = (text or "").strip()
+        urls = extract_urls(text)
+        if len(urls) > 1:
+            self.queue_links(urls)
             return
-        self.url_var.set(text.strip())
+        self.url_var.set(urls[0] if urls else text)
         self.url_entry.icursor("end")
         self.url_entry.focus_set()
-        if text.strip():
+        if text:
             self.start_check()
 
     def _on_url_changed(self, *_):
-        if self.stage == "downloading":
-            return
         if self._debounce:
             self.after_cancel(self._debounce)
             self._debounce = None
         text = self.url_var.get()
         url = normalize_url(text)
-        if url != self._checked_url and self.stage in ("checked", "checking", "done"):
+        if url != self._checked_url and self.stage in ("checked", "checking", "done", "downloading"):
+            self._detach_focus_job()
             self._token += 1  # any running check is now stale
             self._clear_result()
             self.stage = "empty"
@@ -395,9 +513,19 @@ class MainWindow(ctk.CTk):
     def retry(self) -> None:
         self.start_check()
 
+    def _check_request(self, text: str) -> CheckRequest:
+        has_login = not self.login_source.is_none
+        use = self.use_login_var.get() and has_login
+        auto = has_login and self.settings.login_source != "none"
+        return CheckRequest(
+            url=text,
+            login=self.login_source if use else browsers.NONE_SOURCE,
+            password=self.password_var.get() if "password" in self._visible and self.password_var.get() else None,
+            referer=self.referer_var.get().strip() if "referer" in self._visible and self.referer_var.get().strip() else None,
+            fallback_login=self.login_source if auto and not use else None,
+        )
+
     def start_check(self) -> None:
-        if self.stage == "downloading":
-            return
         if self._debounce:
             self.after_cancel(self._debounce)
             self._debounce = None
@@ -405,19 +533,22 @@ class MainWindow(ctk.CTk):
         if not text:
             self.url_entry.focus_set()
             return
+        if self.stage == "downloading":
+            self._detach_focus_job()
         self._token += 1
         token = self._token
-        self._checked_url = normalize_url(text)
-        req = CheckRequest(
-            url=text,
-            login=self.login,
-            password=self.password_var.get() if "password" in self._visible and self.password_var.get() else None,
-            referer=self.referer_var.get().strip() if "referer" in self._visible and self.referer_var.get().strip() else None,
-        )
-        keep = {n for n in ("login", "password", "referer") if n in self._visible}
+        new_url = normalize_url(text)
+        if new_url != self._checked_url and _is_login_host(new_url) and not self.login_source.is_none:
+            self.use_login_var.set(True)  # Vimeo: use the browser login up front
+        self._checked_url = new_url
+        req = self._check_request(text)
+        keep = {n for n in ("password", "referer") if n in self._visible}
+        if _is_login_host(new_url) or "login" in self._visible:
+            keep.add("login")
         self._clear_result()
         self.stage = "checking"
         self._only("spinner", *keep)
+        self._update_login_row()
         self._relayout()
         host = urlparse(self._checked_url or "").hostname or "?"
         log.info("Check started for %s", host)
@@ -443,6 +574,10 @@ class MainWindow(ctk.CTk):
         self.stage = "checked"
         self.result = res
         keep = {n for n in ("password", "referer") if n in self._visible}
+        if res.used_login:
+            self.use_login_var.set(True)
+        if res.used_login or _is_login_host(res.url or self._checked_url) or self.use_login_var.get():
+            keep.add("login")
         status = res.result.status
         if not res.ok:
             self.last_error = res.result
@@ -450,13 +585,15 @@ class MainWindow(ctk.CTk):
             self.show_banner(res.result)
             self._reveal_for(status)
             log.info("Check result: %s", status.value)
+            self._update_login_row()
             self._relayout()
             return
 
         self.last_error = None
         self._only("banner", "preview", "options", "download", *keep)
-        if not self.login.is_none:
-            self._visible.add("login")
+        if self._more_open:
+            self._visible.add("more")
+        self.login_retry.grid_remove()
         self.show_banner(res.result)
         v = res.video
         self.title_label.configure(text=v.title if v else "")
@@ -464,10 +601,20 @@ class MainWindow(ctk.CTk):
                             v.site if v else None) if x]
         self.meta_label.configure(text="  ·  ".join(meta))
 
-        values = [q.display for q in res.qualities]
-        self.quality_menu.configure(values=values)
-        chosen = default_quality(res.qualities, self.settings.default_quality)
-        self.quality_menu.set(chosen.display if chosen else values[0])
+        if res.qualities:
+            values = [q.display for q in res.qualities]
+            self.quality_menu.configure(values=values)
+            chosen = default_quality(res.qualities, self.settings.default_quality)
+            self.quality_menu.set(chosen.display if chosen else values[0])
+        formats = res.formats
+        self.format_menu.configure(values=[f.label for f in formats])
+        preferred = format_by_key(self.settings.default_format)
+        self.format_menu.set(preferred.label if preferred in formats else formats[0].label)
+
+        subs = [NO_SUBTITLES] + [s.label for s in res.subtitles]
+        self.subs_menu.configure(values=subs)
+        self.subs_menu.set(NO_SUBTITLES)
+        self.clip_end.configure(placeholder_text=human_duration(v.duration) if v and v.duration else "1:00")
 
         if res.playlist and res.playlist.count > 1:
             n = res.playlist.count
@@ -479,16 +626,21 @@ class MainWindow(ctk.CTk):
             self.playlist_choice.set("Just this video" if not res.playlist.pure else "First video")
             self._visible.add("playlist")
 
+        if self._redo is not None:
+            self._apply_redo(res)
+        self._on_format_changed(relayout=False)
         self.download_btn.configure(text="Download", state="normal")
+        self._update_login_row()
         self._refresh_folder_label()
         self._relayout()
-        log.info("Check result: ready (%d quality options%s)", len(res.qualities),
-                 f", playlist of {res.playlist.count}" if res.playlist else "")
+        log.info("Check result: ready (%d quality options%s%s)", len(res.qualities),
+                 f", playlist of {res.playlist.count}" if res.playlist else "",
+                 ", with browser login" if res.used_login else "")
 
     def _reveal_for(self, status: Status) -> None:
         if status in LOGIN_STATES:
             self._visible.add("login")
-            self.login_retry.grid(row=0, column=3, padx=(8, 0))
+            self.login_retry.grid(row=0, column=1, padx=(8, 0))
         else:
             self.login_retry.grid_remove()
         if status is Status.NEEDS_PASSWORD:
@@ -525,155 +677,253 @@ class MainWindow(ctk.CTk):
             log.debug("Could not show thumbnail: %s", e)
 
     # ======================================================================================
-    # Login source
+    # Login (a single checkbox; the browser itself is chosen automatically or in Settings)
     # ======================================================================================
 
-    def _login_labels(self) -> list[str]:
-        return [s.label for s in self.login_sources] + [CUSTOM_LABEL]
-
-    def _on_login_selected(self, label: str) -> None:
-        if label == CUSTOM_LABEL:
-            folder = filedialog.askdirectory(parent=self, title="Choose a browser profile folder",
-                                             mustexist=True)
-            src = browsers.custom_source(folder) if folder else None
-            if folder and not src:
-                messagebox.showinfo(APP_TITLE, "That folder doesn't contain a saved browser login "
-                                               "(no cookies.sqlite file). Choose a Firefox, Zen, LibreWolf "
-                                               "or Floorp profile folder.", parent=self)
-            if not src:
-                self.login_menu.set(self.login.label)
-                return
-            if src.key not in {s.key for s in self.login_sources}:
-                self.login_sources.append(src)
-                self.login_menu.configure(values=self._login_labels())
-            self.login = src
-            self.login_menu.set(src.label)
-        else:
-            self.login = next((s for s in self.login_sources if s.label == label), browsers.NONE_SOURCE)
-        log.info("Login source set to %s", "none" if self.login.is_none else self.login.app_name)
-        self._update_login_note()
-
-    def _update_login_note(self) -> None:
-        if self.login.note:
-            self.login_note.configure(text=self.login.note)
-            self.login_note.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+    def _update_login_row(self) -> None:
+        src = self.login_source
+        if src.is_none:
+            self.login_check.grid_remove()
+            self.login_note.configure(text="To download private or password-protected videos, log into the "
+                                           "site with Firefox, Zen, LibreWolf or Floorp, then click Retry.")
+            self.login_note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+            return
+        self.login_check.configure(text=f"Log in with {src.app_name} (for private or password-protected videos)")
+        self.login_check.grid()
+        if src.note:
+            self.login_note.configure(text=src.note)
+            self.login_note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         else:
             self.login_note.grid_remove()
 
-    def set_login_sources(self, sources: list[LoginSource]) -> None:
-        self.login_sources = sources
-        self.login_menu.configure(values=self._login_labels())
-
     # ======================================================================================
-    # Download
+    # Options
     # ======================================================================================
 
-    def _selected_quality(self):
-        if not self.result:
+    def _selected_quality(self) -> Quality | None:
+        if not self.result or not self.result.qualities:
             return None
         shown = self.quality_menu.get()
-        return next((q for q in self.result.qualities if q.display == shown), None)
+        return next((q for q in self.result.qualities if q.display == shown), self.result.qualities[0])
+
+    def _selected_format(self) -> OutputFormat:
+        shown = self.format_menu.get()
+        return next((f for f in FORMATS_BY_KEY.values() if f.label == shown), format_by_key(None))
+
+    def _selected_subtitles(self) -> SubtitleChoice | None:
+        if not self.result or self._selected_format().kind != "video":
+            return None
+        shown = self.subs_menu.get()
+        return next((s for s in self.result.subtitles if s.label == shown), None)
+
+    def _on_format_changed(self, relayout: bool = True) -> None:
+        fmt = self._selected_format()
+        show_quality = fmt.uses_quality and bool(self.result and self.result.qualities)
+        for w in (self.quality_label, self.quality_menu):
+            w.grid() if show_quality else w.grid_remove()
+        has_subs = bool(self.result and self.result.subtitles) and fmt.kind == "video"
+        for w in (self.subs_label, self.subs_menu):
+            w.grid() if has_subs else w.grid_remove()
+        if relayout:
+            self._relayout()
+
+    def toggle_more(self) -> None:
+        self._more_open = not self._more_open
+        self.more_link.configure(text="Fewer options ▾" if self._more_open else "More options ▸")
+        self._set_visible("more", visible=self._more_open)
+        self._on_clip_toggled(relayout=False)
+        self._relayout()
+
+    def _on_clip_toggled(self, relayout: bool = True) -> None:
+        if self.clip_var.get():
+            self.clip_row.grid(row=1, column=0, columnspan=2, sticky="w", padx=12, pady=(6, 0))
+        else:
+            self.clip_row.grid_remove()
+        if relayout:
+            self._fit_height()
+
+    def _project_text(self) -> str:
+        return self.project_box.get().strip()
 
     def _target_folder(self) -> Path:
-        return self.folder_override or self.settings.effective_save_folder()
+        base = self.folder_override or self.settings.effective_save_folder()
+        return base.joinpath(*project_parts(self._project_text()))
 
     def _refresh_folder_label(self) -> None:
         self.folder_label.configure(text=elide_middle(str(self._target_folder()), 52))
 
     def change_folder(self) -> None:
-        folder = filedialog.askdirectory(parent=self, title="Save this download to…",
-                                         initialdir=str(self._target_folder()), mustexist=True)
+        from tkinter import filedialog
+        start = self.folder_override or self.settings.effective_save_folder()
+        folder = filedialog.askdirectory(parent=self, title="Save this download to…", initialdir=str(start),
+                                         mustexist=True)
         if folder:
             self.folder_override = Path(folder)
             self._refresh_folder_label()
 
+    def _clip_range(self) -> tuple[float, float] | None | str:
+        """The chosen clip, None for the whole video, or an error message."""
+        if not self.clip_var.get():
+            return None
+        start_txt, end_txt = self.clip_start.get().strip(), self.clip_end.get().strip()
+        start = parse_timecode(start_txt) if start_txt else 0.0
+        duration = self.result.video.duration if self.result and self.result.video else None
+        end = parse_timecode(end_txt) if end_txt else duration
+        if start is None or (end_txt and end is None):
+            return "Enter the clip times as minutes:seconds, for example 1:30."
+        if end is None:
+            return "Enter where the clip should end."
+        if end <= start:
+            return "The clip must end after it starts."
+        if duration and start >= duration:
+            return f"The video is only {human_duration(duration)} long."
+        return (start, min(end, duration) if duration else end)
+
+    # ======================================================================================
+    # Download (through the queue)
+    # ======================================================================================
+
+    def _ensure_folder(self, folder: Path) -> str | None:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return settings_mod.validate_folder(folder)
+
     def start_download(self) -> None:
         if self.stage != "checked" or not self.result or not self.result.ok:
             return
-        quality = self._selected_quality()
-        if quality is None:
+        res = self.result
+        fmt = self._selected_format()
+        quality = self._selected_quality() if fmt.uses_quality else None
+        clip = self._clip_range()
+        if isinstance(clip, str):
+            self._warn(clip)
             return
+        project = self._project_text()
         folder = self._target_folder()
-        if not folder.exists() and self.folder_override is None and not self.settings.save_folder:
-            try:
-                folder.mkdir(parents=True, exist_ok=True)  # a brand-new profile may lack Downloads
-            except OSError:
-                pass
-        problem = settings_mod.validate_folder(folder)
+        problem = self._ensure_folder(folder)
         if problem:
             self.show_banner(ErrorInfo(Status.SAVE_FAILED, f"{problem} Choose another folder with Change."))
             self._relayout()
             return
 
-        res = self.result
         urls = [res.url]
+        playlist_all = False
         if res.playlist and "playlist" in self._visible and self.playlist_choice.get().startswith("All"):
             urls = res.playlist.entry_urls
             folder = folder / safe_folder_name(res.playlist.title)
+            playlist_all = True
         elif res.playlist and res.playlist.pure:
             urls = res.playlist.entry_urls[:1]
 
+        use_login = (self.use_login_var.get() or res.used_login) and not self.login_source.is_none
+        subs = self._selected_subtitles()
         job = DownloadJob(
             urls=[u for u in urls if u],
             quality=quality,
             folder=folder,
-            login=self.login,
+            login=self.login_source if use_login else browsers.NONE_SOURCE,
             password=self.password_var.get() if "password" in self._visible and self.password_var.get() else None,
             referer=self.referer_var.get().strip() if "referer" in self._visible and self.referer_var.get().strip() else None,
+            fmt=fmt,
+            clip=clip,
+            subtitles=subs,
+            name_prefix=project_prefix(project),
         )
+        title = res.video.title if res.video else res.url
+        meta = {
+            "url": res.url, "title": title, "site": res.video.site if res.video else "",
+            "quality_key": quality.key if quality else "best", "format_key": fmt.key, "folder": str(folder),
+            "used_login": use_login, "referer": job.referer or "", "project": project,
+            "clip": list(clip) if clip else [], "subtitles": subs.lang if subs else "",
+            "subtitles_auto": bool(subs and subs.auto), "playlist_all": playlist_all,
+        }
+        if project:
+            settings_mod.remember_project(self.settings, project)
+            self.project_box.configure(values=self.settings.recent_projects)
+            try:
+                self._save_settings(self.settings)
+            except OSError as e:
+                log.warning("Could not save recent projects: %s", e)
+
+        was_busy = self.queue.busy
+        qj = self.queue.add(job, title, meta)
+        log.info("Download requested: %d item(s), quality=%s, format=%s%s%s", len(job.urls),
+                 quality.key if quality else "-", fmt.key, ", clip" if clip else "", ", subtitles" if subs else "")
+        if was_busy:
+            # Something is already downloading: this one waits in the queue; the form is free.
+            self.download_another()
+            self.show_banner(ErrorInfo(Status.READY, f"Added to the queue: {elide_middle(title, 60)}"))
+            self._relayout()
+            return
+
+        self.focus_job = qj
         self._token += 1
-        token = self._token
         self.stage = "downloading"
-        self._set_inputs_enabled(False)
         keep = {n for n in ("login", "password", "referer", "playlist") if n in self._visible}
         self._only("preview", "options", "progress", *keep)
+        self._set_options_enabled(False)
         self.progress_bar.configure(mode="indeterminate")
         self.progress_bar.start()
         self.progress_text.configure(text="Starting…")
         self.cancel_btn.configure(state="normal", text="Cancel")
         self._relayout()
-        log.info("Download started: %d item(s), quality=%s", len(job.urls), quality.key)
 
-        def work():
-            result = self.engine.download(job, lambda p: self.events.put(("progress", token, p)))
-            self.events.put(("downloaded", token, result))
-
-        self._download_thread = threading.Thread(target=work, name="download", daemon=True)
-        self._download_thread.start()
+    def queue_links(self, urls: list[str]) -> None:
+        """Add several pasted/dropped links to the queue with the default quality and format."""
+        folder = self._target_folder()
+        problem = self._ensure_folder(folder)
+        if problem:
+            self.show_banner(ErrorInfo(Status.SAVE_FAILED, f"{problem} Choose another folder in Settings."))
+            self._relayout()
+            return
+        fmt = format_by_key(self.settings.default_format)
+        dq = self.settings.default_quality
+        quality = Quality(f"h{dq}", f"{dq}p", height=int(dq)) if dq.isdigit() else Quality("best", "Best available")
+        project = self._project_text()
+        for url in urls:
+            login = self.login_source if _is_login_host(url) else browsers.NONE_SOURCE
+            job = DownloadJob(urls=[url], quality=quality if fmt.uses_quality else None, folder=folder,
+                              login=login, fmt=fmt, name_prefix=project_prefix(project))
+            meta = {"url": url, "title": url, "quality_key": quality.key, "format_key": fmt.key,
+                    "folder": str(folder), "used_login": not login.is_none, "project": project}
+            self.queue.add(job, url, meta)
+        log.info("Queued %d links from a batch paste", len(urls))
+        self._detach_focus_job()
+        self._clear_result()
+        self.stage = "empty"
+        self._checked_url = None
+        self.url_var.set("")
+        self._only("banner")
+        self.show_banner(ErrorInfo(Status.READY, f"Added {len(urls)} links to the queue. They download one "
+                                                 "after another with your default quality and format."))
+        self._relayout()
 
     def cancel_download(self) -> None:
-        if self.stage != "downloading":
+        if self.stage != "downloading" or self.focus_job is None:
             return
-        self.engine.cancel()
+        self.queue.cancel(self.focus_job.id)
         self.cancel_btn.configure(state="disabled", text="Cancelling…")
         self.progress_text.configure(text="Cancelling and removing partial files…")
         log.info("Cancel requested")
 
+    def _detach_focus_job(self) -> None:
+        """The user moved on while a download runs: keep it going in the Queue panel."""
+        if self.focus_job is not None and self.focus_job.status in ("waiting", "running"):
+            log.info("Download #%d continues in the queue", self.focus_job.id)
+        self.focus_job = None
+        self._set_options_enabled(True)
+        self.progress_bar.stop()
+        self._refresh_queue(relayout=False)
+
     def _on_progress(self, p: Progress) -> None:
         if self.stage != "downloading":
             return
-        prefix = f"Video {p.item} of {p.items} — " if p.items > 1 else ""
-        if p.phase == "starting":
-            text = prefix + "Starting…"
-            indeterminate = True
-        elif p.phase == "processing":
-            text = prefix + "Finishing up…"
-            indeterminate = True
-        else:
-            bits = []
-            if p.percent is not None:
-                bits.append(f"{p.percent:.0f}%")
-            elif p.downloaded:
-                bits.append(f"{human_size(p.downloaded)} so far")
-            if p.speed:
-                bits.append(f"{human_size(p.speed)}/s")
-            if p.eta is not None and p.percent is not None:
-                bits.append(_eta_text(p.eta))
-            text = prefix + ("  ·  ".join(bits) or "Downloading…")
-            indeterminate = p.percent is None
-        if self.engine.cancelled:
+        if self.focus_job is not None and self.focus_job.engine is not None and self.focus_job.engine.cancelled:
             return
-        if indeterminate:
+        text, percent = _progress_text(p)
+        if percent is None:
             if self.progress_bar.cget("mode") != "indeterminate":
                 self.progress_bar.configure(mode="indeterminate")
                 self.progress_bar.start()
@@ -681,13 +931,40 @@ class MainWindow(ctk.CTk):
             if self.progress_bar.cget("mode") != "determinate":
                 self.progress_bar.stop()
                 self.progress_bar.configure(mode="determinate")
-            self.progress_bar.set(max(0.0, min(1.0, (p.percent or 0) / 100)))
+            self.progress_bar.set(max(0.0, min(1.0, percent / 100)))
         self.progress_text.configure(text=text)
+
+    def _on_job_done(self, qj: QueuedJob) -> None:
+        r = qj.result or DownloadResult()
+        if not r.cancelled:
+            self._record_history(qj)
+            if self.settings.notify_when_done:
+                notify_done(self)
+        if qj is self.focus_job:
+            self.focus_job = None
+            self._on_download_done(r)
+        self._refresh_queue()
+
+    def _record_history(self, qj: QueuedJob) -> None:
+        r = qj.result
+        m = qj.meta
+        title = qj.title if m.get("title") in (None, "", m.get("url")) else m["title"]
+        err = r.failures[0][1].message if r.failures else ""
+        entry = HistoryEntry(
+            url=m.get("url", qj.job.urls[0]), title=title or m.get("url", ""), ok=bool(r.files),
+            site=m.get("site", ""), quality_key=m.get("quality_key", "best"), format_key=m.get("format_key", "original"),
+            files=[str(f) for f in r.files], folder=m.get("folder", str(qj.job.folder)), error=err,
+            count=len(qj.job.urls), failed_count=len(r.failures), used_login=m.get("used_login", False),
+            referer=m.get("referer", ""), project=m.get("project", ""), clip=m.get("clip", []),
+            subtitles=m.get("subtitles", ""), subtitles_auto=m.get("subtitles_auto", False),
+            playlist_all=m.get("playlist_all", False),
+        )
+        self.history.add(entry)
+        self._refresh_history()
 
     def _on_download_done(self, r: DownloadResult) -> None:
         self.progress_bar.stop()
-        self._set_inputs_enabled(True)
-        self._download_thread = None
+        self._set_options_enabled(True)
         keep = {n for n in ("login", "password", "referer", "playlist") if n in self._visible}
         if r.cancelled:
             log.info("Download cancelled")
@@ -714,7 +991,7 @@ class MainWindow(ctk.CTk):
         if len(r.files) == 1:
             text = f"Saved: {r.files[0].name}"
         else:
-            text = f"Saved {len(r.files)} videos to {elide_middle(str(r.files[0].parent), 60)}"
+            text = f"Saved {len(r.files)} files to {elide_middle(str(r.files[0].parent), 60)}"
         self.done_text.configure(text=text)
         self._only("done")
         if r.failures:
@@ -724,8 +1001,8 @@ class MainWindow(ctk.CTk):
             self.show_banner(ErrorInfo(Status.UNKNOWN,
                                        f"{n} video{'s' if n > 1 else ''} couldn't be downloaded. {first.message}",
                                        detail))
-            self.banner.configure(fg_color=BANNER_COLORS[Severity.WARN][0])
-            self.banner_dot.configure(text_color=BANNER_COLORS[Severity.WARN][1])
+            self.banner.configure(fg_color=theme.WARN_BG)
+            self.banner_dot.configure(text_color=theme.WARN)
         self._relayout()
         self.show_btn.focus_set()
 
@@ -734,8 +1011,7 @@ class MainWindow(ctk.CTk):
             show_in_folder(self.saved_files[0])
 
     def download_another(self) -> None:
-        if self.stage == "downloading":
-            return
+        self._detach_focus_job()
         self._token += 1
         self.stage = "empty"
         self.folder_override = None
@@ -743,20 +1019,194 @@ class MainWindow(ctk.CTk):
         self._clear_result()
         self.password_var.set("")
         self.referer_var.set("")
+        self.clip_var.set(False)
+        self.clip_start.delete(0, "end")
+        self.clip_end.delete(0, "end")
+        self._on_clip_toggled(relayout=False)
+        self.use_login_var.set(False)
         self.url_var.set("")
         self._only()
         self._refresh_folder_label()
         self._relayout()
         self.url_entry.focus_set()
 
-    def _set_inputs_enabled(self, enabled: bool) -> None:
+    def _set_options_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
-        for w in (self.url_entry, self.paste_btn, self.check_btn, self.quality_menu, self.login_menu,
-                  self.password_entry, self.referer_entry, self.playlist_choice, self.settings_btn):
+        for w in (self.quality_menu, self.format_menu, self.subs_menu, self.playlist_choice, self.login_check):
             try:
                 w.configure(state=state)
             except (tk.TclError, ValueError):
                 pass
+
+    # ======================================================================================
+    # Queue panel
+    # ======================================================================================
+
+    def _refresh_queue(self, relayout: bool = True) -> None:
+        jobs = [j for j in self.queue.active() if j is not self.focus_job]
+        ids = {j.id for j in jobs}
+        for jid in list(self._queue_rows):
+            if jid not in ids:
+                self._queue_rows.pop(jid)["frame"].destroy()
+        for i, qj in enumerate(jobs):
+            row = self._queue_rows.get(qj.id)
+            if row is None:
+                row = self._make_queue_row(qj)
+                self._queue_rows[qj.id] = row
+            row["frame"].grid(row=i, column=0, sticky="ew", padx=8, pady=(6 if i == 0 else 2, 6))
+            self._update_queue_row(qj)
+        self.queue_title.configure(text=f"Queue ({len(jobs)})" if jobs else "Queue")
+        if relayout:
+            self._relayout()
+
+    def _make_queue_row(self, qj: QueuedJob) -> dict:
+        f = ctk.CTkFrame(self.queue_list, fg_color="transparent")
+        f.grid_columnconfigure(0, weight=1)
+        title = ctk.CTkLabel(f, text="", anchor="w")
+        title.grid(row=0, column=0, sticky="ew")
+        status = ctk.CTkLabel(f, text="", anchor="w", text_color=MUTED)
+        status.grid(row=1, column=0, sticky="ew")
+        bar = ctk.CTkProgressBar(f, height=6)
+        bar.set(0)
+        x = ctk.CTkButton(f, text="✕", width=28, height=28, fg_color="transparent", hover_color=theme.SURFACE_2,
+                          text_color=MUTED, command=lambda: self.queue.cancel(qj.id))
+        x.grid(row=0, column=1, rowspan=2, padx=(6, 0))
+        Tooltip(x, "Cancel this download")
+        return {"frame": f, "title": title, "status": status, "bar": bar}
+
+    def _update_queue_row(self, qj: QueuedJob) -> None:
+        row = self._queue_rows.get(qj.id)
+        if row is None:
+            return
+        row["title"].configure(text=elide_middle(qj.title, 64))
+        if qj.status == "running" and qj.progress is not None:
+            text, percent = _progress_text(qj.progress)
+            row["status"].configure(text=text)
+            if percent is not None:
+                row["bar"].grid(row=2, column=0, sticky="ew", pady=(2, 0))
+                row["bar"].set(percent / 100)
+        elif qj.status == "running":
+            row["status"].configure(text="Starting…")
+        else:
+            row["status"].configure(text="Waiting")
+            row["bar"].grid_remove()
+
+    # ======================================================================================
+    # History panel
+    # ======================================================================================
+
+    def _refresh_history(self) -> None:
+        for child in list(self.history_list.winfo_children()):
+            child.destroy()
+        entries = self.history.entries[:HISTORY_ROWS_SHOWN]
+        for i, entry in enumerate(entries):
+            self._make_history_row(i, entry)
+        self.history_title.configure(text=f"History ({len(self.history.entries)})" if entries else "History")
+
+    def _make_history_row(self, i: int, entry: HistoryEntry) -> None:
+        color = theme.OK if entry.ok else theme.ERROR
+        row = ctk.CTkFrame(self.history_list, fg_color=theme.OK_BG if entry.ok else theme.ERROR_BG, corner_radius=6)
+        row.grid(row=i, column=0, sticky="ew", padx=4, pady=2)
+        row.grid_columnconfigure(1, weight=1)
+        bar = ctk.CTkFrame(row, width=4, height=30, fg_color=color, corner_radius=2)  # CTkFrame defaults to 200 px
+        bar.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(6, 8), pady=6)
+        title = ctk.CTkLabel(row, text=elide_middle(entry.title, 70), anchor="w", cursor="hand2")
+        title.grid(row=0, column=1, sticky="ew", pady=(4, 0))
+        fmt = format_by_key(entry.format_key)
+        bits = [entry.site, fmt.label if fmt.key != "original" else "", history_mod.relative_time(entry.when)]
+        if entry.count > 1:
+            bits.insert(0, f"{entry.count - entry.failed_count} of {entry.count} videos")
+        if not entry.ok and entry.error:
+            bits.append(entry.error)
+        meta = ctk.CTkLabel(row, text="  ·  ".join(b for b in bits if b), anchor="w", text_color=MUTED,
+                            cursor="hand2", justify="left")
+        meta.grid(row=1, column=1, sticky="ew", pady=(0, 4))
+        if entry.ok and entry.first_file():
+            ctk.CTkButton(row, text="Show", width=54, height=26, command=lambda e=entry: self._show_history_file(e),
+                          **self._secondary).grid(row=0, column=2, rowspan=2, padx=6)
+        for w in (row, title, meta, bar):
+            w.bind("<Button-1>", lambda _e, en=entry: self.redownload(en))
+            w.bind("<Button-3>", lambda ev, en=entry: self._history_menu(ev, en))
+        Tooltip(title, "Click to download again" if entry.ok else "Click to try again")
+
+    def _show_history_file(self, entry: HistoryEntry) -> None:
+        f = entry.first_file()
+        if f:
+            show_in_folder(f)
+
+    def _history_menu(self, event, entry: HistoryEntry) -> None:
+        menu = tk.Menu(self, tearoff=0, bg=theme.SURFACE, fg=theme.TEXT, activebackground=theme.SURFACE_2,
+                       activeforeground=theme.TEXT)
+        menu.add_command(label="Download again", command=lambda: self.redownload(entry))
+        if entry.first_file():
+            menu.add_command(label="Show in folder", command=lambda: self._show_history_file(entry))
+        menu.add_command(label="Copy link", command=lambda: self._copy_text(entry.url))
+        menu.add_separator()
+        menu.add_command(label="Remove from history", command=lambda: self.remove_history(entry))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copy_text(self, text: str) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._last_clipboard = text  # don't treat our own copy as a newly copied link
+
+    def redownload(self, entry: HistoryEntry) -> None:
+        """Put a past download back in the form with the same options and check it."""
+        log.info("Re-checking a download from history")
+        self.download_another()
+        self._redo = entry
+        if entry.referer:
+            self.referer_var.set(entry.referer)
+            self._visible.add("referer")
+        self.url_var.set(entry.url)
+        self.use_login_var.set(entry.used_login and not self.login_source.is_none)
+        self._checked_url = normalize_url(entry.url)  # keep start_check from resetting the login choice
+        self.start_check()
+
+    def _apply_redo(self, res: CheckResult) -> None:
+        entry, self._redo = self._redo, None
+        q = next((q for q in res.qualities if q.key == entry.quality_key), None)
+        if q:
+            self.quality_menu.set(q.display)
+        fmt = format_by_key(entry.format_key)
+        if fmt in res.formats:
+            self.format_menu.set(fmt.label)
+        if entry.subtitles:
+            sub = next((s for s in res.subtitles if s.lang == entry.subtitles), None)
+            if sub:
+                self.subs_menu.set(sub.label)
+        if entry.project:
+            self.project_box.set(entry.project)
+        if entry.clip:
+            self.clip_var.set(True)
+            self.clip_start.delete(0, "end")
+            self.clip_start.insert(0, format_timecode(entry.clip[0]))
+            self.clip_end.delete(0, "end")
+            self.clip_end.insert(0, format_timecode(entry.clip[1]))
+        if (entry.project or entry.clip or entry.subtitles) and not self._more_open:
+            self.toggle_more()
+        if entry.playlist_all and "playlist" in self._visible:
+            values = self.playlist_choice.cget("values")
+            if values:
+                self.playlist_choice.set(values[-1])
+
+    def remove_history(self, entry: HistoryEntry) -> None:
+        self.history.remove(entry.id)
+        self._refresh_history()
+        self._relayout()
+
+    def clear_history(self, confirm: bool = True) -> None:
+        if not self.history.entries:
+            return
+        if confirm and not messagebox.askyesno(
+                APP_TITLE, "Clear the download history? Your downloaded files stay where they are.", parent=self):
+            return
+        self.history.clear()
+        self._refresh_history()
+        self._relayout()
 
     # ======================================================================================
     # Engine updates
@@ -810,8 +1260,6 @@ class MainWindow(ctk.CTk):
     # ======================================================================================
 
     def open_settings(self) -> None:
-        if self.stage == "downloading":
-            return
         from .ui_settings import SettingsWindow
         existing = getattr(self, "_settings_win", None)
         if existing is not None and existing.winfo_exists():
@@ -822,44 +1270,51 @@ class MainWindow(ctk.CTk):
                                             save_settings=self._save_settings)
 
     def _on_settings_saved(self, new: Settings) -> None:
-        login_changed = new.login_source != self.settings.login_source
         self.settings = new
-        if login_changed:
-            self.login = browsers.from_key(new.login_source, self.login_sources)
-            self.login_menu.set(self.login.label)
-            self._update_login_note()
+        self.login_source = browsers.resolve(new.login_source, self.login_sources)
+        if self.login_source.is_none:
+            self.use_login_var.set(False)
+        self._update_login_row()
         self._refresh_folder_label()
         if self.result and self.result.ok and self.stage == "checked":
             chosen = default_quality(self.result.qualities, new.default_quality)
             if chosen:
                 self.quality_menu.set(chosen.display)
-        if not self.login.is_none and self.stage in ("checked", "done"):
-            self._visible.add("login")
+            fmt = format_by_key(new.default_format)
+            if fmt in self.result.formats:
+                self.format_menu.set(fmt.label)
+                self._on_format_changed(relayout=False)
         self._relayout()
 
     # ======================================================================================
-    # Events, keys, window
+    # Events, keys, drag and drop, clipboard, window
     # ======================================================================================
 
     def _poll(self) -> None:
         last_progress: Progress | None = None
+        job_progress: dict[int, QueuedJob] = {}
         try:
             while True:
                 kind, token, payload = self.events.get_nowait()
                 if token is not None and token != self._token:
-                    continue  # result of a check/download the user has moved on from
-                if kind == "progress":
-                    last_progress = payload  # only the newest progress matters
+                    continue  # result of a check the user has moved on from
+                if kind == "job_progress":
+                    qj, p = payload
+                    if qj is self.focus_job:
+                        last_progress = p  # only the newest progress matters
+                    else:
+                        job_progress[qj.id] = qj
                     continue
-                if last_progress is not None:
-                    self._on_progress(last_progress)
-                    last_progress = None
                 if kind == "check":
                     self._on_check_done(payload)
                 elif kind == "thumb":
                     self._on_thumbnail(payload)
-                elif kind == "downloaded":
-                    self._on_download_done(payload)
+                elif kind in ("job_added", "job_started"):
+                    self._refresh_queue()
+                elif kind == "job_done":
+                    if payload is self.focus_job:
+                        last_progress = None
+                    self._on_job_done(payload)
                 elif kind == "update_available":
                     self._on_update_available(payload)
                 elif kind == "update_installed":
@@ -871,8 +1326,13 @@ class MainWindow(ctk.CTk):
             pass
         except Exception:  # noqa: BLE001 - never let the poll loop die
             log.exception("Error while handling a background event")
-        if last_progress is not None:
-            self._on_progress(last_progress)
+        try:
+            if last_progress is not None:
+                self._on_progress(last_progress)
+            for qj in job_progress.values():
+                self._update_queue_row(qj)
+        except Exception:  # noqa: BLE001
+            log.exception("Error while showing progress")
         self._poll_id = self.after(POLL_MS, self._poll)
 
     def _bind_keys(self) -> None:
@@ -883,6 +1343,41 @@ class MainWindow(ctk.CTk):
             self.bind(seq, self._on_ctrl_v)
             self.url_entry.bind(seq, self._paste_into_url)
         self.url_entry.bind("<<Paste>>", self._paste_into_url)
+        self.bind("<FocusIn>", self._on_focus_in, add="+")
+
+    def _enable_drag_and_drop(self) -> None:
+        if TkinterDnD is None:
+            return
+        try:
+            self.TkdndVersion = TkinterDnD._require(self)
+            self.drop_target_register(DND_TEXT)
+            self.dnd_bind("<<Drop>>", self._on_drop)
+        except Exception as e:  # noqa: BLE001 - drag and drop is a convenience
+            log.info("Drag and drop unavailable: %s", e)
+
+    def _on_drop(self, event):
+        log.info("Link dropped onto the window")
+        self.accept_text(event.data or "")
+        return getattr(event, "action", None)
+
+    def _on_focus_in(self, event=None) -> None:
+        """When the app comes to the front with an empty form, use a video link just copied."""
+        if event is not None and event.widget is not self:
+            return
+        if not self.settings.use_copied_links or self.stage != "empty" or self.url_var.get().strip():
+            return
+        try:
+            text = self.clipboard_get().strip()
+        except tk.TclError:
+            return
+        if not text or text == self._last_clipboard or len(text) > 4096:
+            return
+        self._last_clipboard = text
+        urls = extract_urls(text)
+        if len(urls) == 1 and text.startswith(("http://", "https://", "www.")) and " " not in text:
+            log.info("Using a link from the clipboard")
+            self.url_var.set(urls[0])
+            self.start_check()
 
     def _on_enter(self, _event=None):
         if self.stage == "checked" and self.result and self.result.ok:
@@ -906,17 +1401,16 @@ class MainWindow(ctk.CTk):
     def _on_ctrl_v(self, event=None):
         focus = self.focus_get()
         if isinstance(focus, tk.Entry) and focus is not self.url_entry._entry:
-            return None  # normal paste into the password/page fields
+            return None  # normal paste into the password/page/clip/project fields
         return self._paste_into_url(event)
 
     def _paste_into_url(self, _event=None):
-        if self.stage != "downloading":
-            self.paste_url()
+        self.paste_url()
         return "break"
 
     def _restore_geometry(self) -> None:
         geo = self.settings.window_geometry
-        default = "620x260"
+        default = "640x260"
         if not geo:
             self.geometry(default)
             return
@@ -942,16 +1436,15 @@ class MainWindow(ctk.CTk):
             log.warning("Could not save window size: %s", e)
 
     def _on_close(self) -> None:
-        if self.stage == "downloading":
-            if not messagebox.askyesno(APP_TITLE, "A download is in progress. Cancel it and quit?", parent=self):
+        if self.queue.busy:
+            n = len(self.queue.active())
+            what = "A download is" if n == 1 else f"{n} downloads are"
+            if not messagebox.askyesno(APP_TITLE, f"{what} in progress. Cancel and quit?", parent=self):
                 return
-            self.engine.cancel()
-            t = self._download_thread
-            if t is not None:
-                t.join(timeout=15)  # let the engine delete partial files
+            self.queue.cancel_all()
+            self.queue.join(timeout=15)  # let the engine delete partial files
         self._remember_geometry()
         self.destroy()
-
 
     def destroy(self) -> None:
         for after_id in (getattr(self, "_poll_id", None), self._debounce):
@@ -961,6 +1454,29 @@ class MainWindow(ctk.CTk):
                 except tk.TclError:
                     pass
         super().destroy()
+
+
+def _progress_text(p: Progress) -> tuple[str, float | None]:
+    """Plain-English progress line and the percent for the bar (None = unknown)."""
+    prefix = f"Video {p.item} of {p.items} — " if p.items > 1 else ""
+    if p.phase == "starting":
+        return prefix + "Starting…", None
+    if p.phase == "processing":
+        return prefix + "Finishing up…", None
+    if p.phase == "converting":
+        if p.percent is None:
+            return prefix + "Converting…", None
+        return prefix + f"Converting for editing… {p.percent:.0f}%", p.percent
+    bits = []
+    if p.percent is not None:
+        bits.append(f"{p.percent:.0f}%")
+    elif p.downloaded:
+        bits.append(f"{human_size(p.downloaded)} so far")
+    if p.speed:
+        bits.append(f"{human_size(p.speed)}/s")
+    if p.eta is not None and p.percent is not None:
+        bits.append(_eta_text(p.eta))
+    return prefix + ("  ·  ".join(bits) or "Downloading…"), p.percent
 
 
 def _eta_text(seconds: float) -> str:

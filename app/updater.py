@@ -5,7 +5,7 @@ A PyInstaller exe can't pip-install, so updates work like this:
 1. ``check_for_update`` asks PyPI for the latest yt-dlp release and the exact
    yt-dlp-ejs version it pins (needed for full YouTube support).
 2. ``install_update`` downloads both pure-Python wheels into
-   ``%APPDATA%\\VideoDownloader\\engine\\``, verifies their SHA-256 against PyPI,
+   ``%APPDATA%\\SuperDownloader\\engine\\``, verifies their SHA-256 against PyPI,
    and writes ``active.json``.
 3. On the next launch ``bootstrap_engine`` (called before anything imports
    yt_dlp) puts those wheels at the front of ``sys.path``. Python imports
@@ -248,7 +248,7 @@ def _finish(state: EngineState, main_import: str) -> EngineState:
 # --------------------------------------------------------------------------------------------
 
 def _get_json(url: str, opener: Opener | None, timeout: float) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "VideoDownloader-updater",
+    req = urllib.request.Request(url, headers={"User-Agent": "SuperDownloader-updater",
                                                "Accept": "application/json"})
     with (opener or urllib.request.urlopen)(req, timeout=timeout) as resp:  # type: ignore[operator]
         return json.loads(resp.read().decode("utf-8"))
@@ -312,7 +312,7 @@ def install_update(info: UpdateInfo, *, opener: Opener | None = None, timeout: f
             fd, tmp = tempfile.mkstemp(dir=engine_dir, prefix=".download-", suffix=".tmp")
             try:
                 h = hashlib.sha256()
-                req = urllib.request.Request(wheel.url, headers={"User-Agent": "VideoDownloader-updater"})
+                req = urllib.request.Request(wheel.url, headers={"User-Agent": "SuperDownloader-updater"})
                 with os.fdopen(fd, "wb") as out, (opener or urllib.request.urlopen)(req, timeout=timeout) as resp:  # type: ignore[operator]
                     while chunk := resp.read(1 << 16):
                         h.update(chunk)

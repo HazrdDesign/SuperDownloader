@@ -1,1 +1,1 @@
-"""Simple Video Downloader."""
+"""Super Downloader."""

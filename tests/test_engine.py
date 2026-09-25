@@ -7,6 +7,7 @@ import pytest
 
 from app import engine
 from app.engine import (
+    FORMATS_BY_KEY,
     CheckRequest,
     DownloadJob,
     Engine,
@@ -160,7 +161,7 @@ def test_check_direct_video_is_ready(media_server):
     res = Engine().check_link(CheckRequest(f"{media_server}/clip.mp4"))
     assert res.ok, res.result
     # A raw file link has no height metadata, so only Best + Audio are offered.
-    assert [q.key for q in res.qualities] == ["best", "audio"]
+    assert [q.key for q in res.qualities] == ["best"]
     assert res.video.title
     assert res.playlist is None
 
@@ -211,7 +212,7 @@ def test_download_mp4_then_duplicate_gets_suffix(media_server, tmp_path):
 
 @requires_ffmpeg
 def test_download_audio_only_is_playable_mp3(media_server, tmp_path):
-    job = DownloadJob([f"{media_server}/clip.mp4"], Quality("audio", "Audio", audio_only=True), tmp_path)
+    job = DownloadJob([f"{media_server}/clip.mp4"], None, tmp_path, fmt=FORMATS_BY_KEY["mp3"])
     r = Engine().download(job, lambda p: None)
     assert r.error is None, r.failures
     [mp3] = r.files
@@ -266,7 +267,7 @@ def test_download_failure_cleans_up_and_reports(media_server, tmp_path):
 def test_dash_separate_streams_offer_real_heights(media_server):
     res = Engine().check_link(CheckRequest(f"{media_server}/dash/manifest.mpd"))
     assert res.ok, res.result
-    assert [q.key for q in res.qualities] == ["best", "h720", "h360", "audio"]
+    assert [q.key for q in res.qualities] == ["best", "h720", "h360"]
 
 
 def dash_listing(media_dir: Path) -> str:
@@ -335,3 +336,168 @@ def test_safe_folder_name():
     assert safe_folder_name("...") == "Playlist"
     assert safe_folder_name("") == "Playlist"
     assert len(safe_folder_name("x" * 500)) <= 100
+
+
+# ---- formats, clips, subtitles, projects ------------------------------------------------------
+
+def test_timecode_parsing_and_suffix():
+    from app.engine import clip_suffix, format_timecode, parse_timecode
+    assert parse_timecode("83") == 83
+    assert parse_timecode("1:23") == 83
+    assert parse_timecode("0:01:23.5") == 83.5
+    assert parse_timecode("1:02:03") == 3723
+    assert parse_timecode("") is None and parse_timecode("abc") is None
+    assert format_timecode(83.5) == "1:23.5"
+    assert clip_suffix((42, 58)) == " (clip 0m42s-0m58s)"
+    assert clip_suffix(None) == ""
+
+
+def test_project_prefix_and_folders():
+    from app.engine import project_parts, project_prefix
+    assert project_parts("Nike / Spring 2027") == ["Nike", "Spring 2027"]
+    assert project_parts("  ") == []
+    assert project_prefix("Nike / Spring 2027", "2026-09-25") == "Nike_Spring-2027_2026-09-25_"
+    assert project_prefix("", "2026-09-25") == ""
+    assert not any(c in "".join(project_parts('a:b / c?d')) for c in ':?')
+
+
+def test_extract_urls_for_batch_paste():
+    from app.engine import extract_urls
+    text = "refs:\nhttps://vimeo.com/1\nhttps://www.youtube.com/watch?v=abc, vimeo.com/2 (dup) https://vimeo.com/1."
+    assert extract_urls(text) == ["https://vimeo.com/1", "https://www.youtube.com/watch?v=abc"]
+    assert extract_urls("nothing here") == []
+
+
+def test_frame_rate_argument():
+    from app.engine import _frame_rate_arg
+    assert _frame_rate_arg(29.97) == "30000/1001"
+    assert _frame_rate_arg(23.976) == "24000/1001"
+    assert _frame_rate_arg(25) == "25"
+    assert _frame_rate_arg(None) is None
+
+
+def test_unique_stem_across_new_formats(tmp_path):
+    (tmp_path / "Clip.mp4").write_bytes(b"x")
+    assert unique_stem(tmp_path, "Clip", "mov") == "Clip"
+    assert unique_stem(tmp_path, "Clip", "wav") == "Clip"
+    (tmp_path / "Clip.mov").write_bytes(b"x")
+    assert unique_stem(tmp_path, "Clip", "mov") == "Clip (1)"
+
+
+def test_login_fallback_retry(monkeypatch):
+    """A 'needs login' result is retried once with the browser login, and says so."""
+    from app.browsers import LoginSource
+    from app.engine import CheckResult
+    from app.errors import classify_error, ready
+    zen = LoginSource("firefox:/z", "Zen — Default", "Zen", "firefox", "/z")
+    calls = []
+
+    def fake_once(self, req):
+        calls.append(req.login)
+        if req.login.is_none:
+            return CheckResult(classify_error("The web client only works when logged-in"))
+        return CheckResult(ready(), url=req.url)
+
+    monkeypatch.setattr(Engine, "_check_once", fake_once)
+    res = Engine().check_link(CheckRequest("https://vimeo.com/1", fallback_login=zen))
+    assert res.ok and res.used_login
+    assert calls == [engine.NONE_SOURCE, zen]
+    # No fallback: the needs-login result is returned as is.
+    calls.clear()
+    res = Engine().check_link(CheckRequest("https://vimeo.com/1"))
+    assert res.result.status is Status.NEEDS_LOGIN and not res.used_login and len(calls) == 1
+
+
+@requires_ffmpeg
+@pytest.mark.parametrize("key,codec,ext", [("edit", "h264", ".mp4"), ("prores", "prores", ".mov")])
+def test_edit_ready_and_prores_conversion(media_server, tmp_path, key, codec, ext):
+    e = Engine()
+    res = e.check_link(CheckRequest(f"{media_server}/dash/manifest.mpd"))
+    phases = []
+    r = e.download(DownloadJob([res.url], res.qualities[-1], tmp_path, fmt=FORMATS_BY_KEY[key]),
+                   lambda p: phases.append((p.phase, p.percent)))
+    assert r.error is None, r.failures
+    [f] = r.files
+    assert f.suffix == ext
+    probe = ffprobe_json(f)
+    video = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    audio = next(s for s in probe["streams"] if s["codec_type"] == "audio")
+    assert video["codec_name"] == codec
+    assert video["r_frame_rate"] == video["avg_frame_rate"]  # constant frame rate
+    assert audio["codec_name"] == ("aac" if key == "edit" else "pcm_s16le")
+    assert any(ph == "converting" and pct == 100.0 for ph, pct in phases)
+    assert list(tmp_path.iterdir()) == [f]  # the downloaded source was removed
+
+
+@requires_ffmpeg
+def test_wav_audio(media_server, tmp_path):
+    r = Engine().download(DownloadJob([f"{media_server}/clip.mp4"], None, tmp_path, fmt=FORMATS_BY_KEY["wav"]),
+                          lambda p: None)
+    assert r.error is None, r.failures
+    [f] = r.files
+    assert f.suffix == ".wav"
+    assert [s["codec_name"] for s in ffprobe_json(f)["streams"]][0].startswith("pcm_")
+
+
+@requires_ffmpeg
+def test_clip_range_downloads_only_that_part(media_server, tmp_path):
+    e = Engine()
+    res = e.check_link(CheckRequest(f"{media_server}/clip.mp4"))
+    r = e.download(DownloadJob([res.url], res.qualities[0], tmp_path, clip=(1.0, 3.0)), lambda p: None)
+    assert r.error is None, r.failures
+    [f] = r.files
+    assert f.name.endswith(" (clip 0m01s-0m03s).mp4")
+    duration = float(ffprobe_json(f)["format"]["duration"])
+    assert 1.5 < duration < 2.6
+
+
+@requires_ffmpeg
+def test_subtitles_listed_and_saved_as_srt(media_server, tmp_path):
+    e = Engine()
+    res = e.check_link(CheckRequest(f"{media_server}/withsubs.html"))
+    assert res.ok, res.result
+    assert [s.lang for s in res.subtitles] == ["en"]
+    assert res.subtitles[0].label == "English"
+    r = e.download(DownloadJob([res.url], res.qualities[0], tmp_path, subtitles=res.subtitles[0]), lambda p: None)
+    assert r.error is None, r.failures
+    [video] = r.files
+    srt = tmp_path / f"{video.stem}.en.srt"
+    assert srt.is_file(), sorted(p.name for p in tmp_path.iterdir())
+    assert "Hello there" in srt.read_text(encoding="utf-8")
+
+
+@requires_ffmpeg
+def test_thumbnail_jpg(media_server, tmp_path):
+    e = Engine()
+    res = e.check_link(CheckRequest(f"{media_server}/withsubs.html"))
+    r = e.download(DownloadJob([res.url], None, tmp_path, fmt=FORMATS_BY_KEY["jpg"]), lambda p: None)
+    assert r.error is None, r.failures
+    [f] = r.files
+    assert f.suffix == ".jpg"
+    from PIL import Image
+    with Image.open(f) as img:
+        assert img.format == "JPEG" and img.size == (1280, 720)
+
+
+@requires_ffmpeg
+def test_project_prefix_in_file_name(media_server, tmp_path):
+    e = Engine()
+    res = e.check_link(CheckRequest(f"{media_server}/clip.mp4"))
+    r = e.download(DownloadJob([res.url], res.qualities[0], tmp_path, name_prefix="Nike_Spring_2026-09-25_"),
+                   lambda p: None)
+    [f] = r.files
+    assert f.name.startswith("Nike_Spring_2026-09-25_")
+
+
+@requires_ffmpeg
+def test_cancel_during_conversion_leaves_nothing(media_server, tmp_path):
+    e = Engine()
+    res = e.check_link(CheckRequest(f"{media_server}/dash/manifest.mpd"))
+
+    def on_progress(p):
+        if p.phase == "converting":
+            e.cancel()
+
+    r = e.download(DownloadJob([res.url], res.qualities[0], tmp_path, fmt=FORMATS_BY_KEY["prores"]), on_progress)
+    assert r.cancelled
+    assert list(tmp_path.iterdir()) == []

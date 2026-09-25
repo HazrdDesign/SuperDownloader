@@ -1,4 +1,4 @@
-"""Load and save user settings as JSON in ``%APPDATA%\\VideoDownloader\\settings.json``."""
+"""Load and save user settings as JSON in ``%APPDATA%\\SuperDownloader\\settings.json``."""
 
 from __future__ import annotations
 
@@ -14,13 +14,13 @@ from . import paths
 
 log = logging.getLogger(__name__)
 
-QUALITY_CHOICES = ("best", "1080", "720", "audio")
+QUALITY_CHOICES = ("best", "1080", "720")
 QUALITY_LABELS = {
     "best": "Best available",
     "1080": "1080p",
     "720": "720p",
-    "audio": "Audio only (MP3)",
 }
+MAX_RECENT_PROJECTS = 8
 
 
 @dataclass
@@ -29,10 +29,16 @@ class Settings:
     # a moved Downloads folder is followed automatically.
     save_folder: str = ""
     default_quality: str = "best"
-    # A login source key from browsers.py ("none", "firefox:<profile path>", "chrome", ...).
-    login_source: str = "none"
+    default_format: str = "original"   # an engine.FORMATS key
+    # Browser login used when a site asks for one: "auto" (the most recently used Firefox,
+    # Zen, LibreWolf or Floorp profile), "none", or a key from browsers.py.
+    login_source: str = "auto"
     check_updates_on_launch: bool = True
+    use_copied_links: bool = True      # fill in a video link you just copied when the app gets focus
+    notify_when_done: bool = True      # flash the taskbar and play a sound when a download finishes
+    recent_projects: list = dataclasses.field(default_factory=list)
     window_geometry: str = ""
+    version: int = 2
 
     def effective_save_folder(self) -> Path:
         if self.save_folder:
@@ -53,9 +59,23 @@ def _coerce(data: dict) -> Settings:
         else:
             log.warning("Ignoring setting %s with unexpected type %s", f.name, type(value).__name__)
     s = Settings(**values)
+    if s.default_quality == "audio":  # older versions offered audio as a quality
+        s.default_quality, s.default_format = "best", "mp3"
     if s.default_quality not in QUALITY_CHOICES:
         s.default_quality = defaults.default_quality
+    if "version" not in data and s.login_source == "none":
+        # Version 1 saved "none" by default; version 2 picks the browser automatically.
+        s.login_source = "auto"
+    s.recent_projects = [p for p in s.recent_projects if isinstance(p, str) and p.strip()][:MAX_RECENT_PROJECTS]
     return s
+
+
+def remember_project(settings: Settings, project: str) -> None:
+    project = project.strip()
+    if not project:
+        return
+    rest = [p for p in settings.recent_projects if p.lower() != project.lower()]
+    settings.recent_projects = [project, *rest][:MAX_RECENT_PROJECTS]
 
 
 def load(path: Path | None = None) -> Settings:

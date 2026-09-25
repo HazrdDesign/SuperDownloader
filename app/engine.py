@@ -10,10 +10,12 @@ DRM: this module never enables ``allow_unplayable_formats`` and stops with a
 from __future__ import annotations
 
 import copy
+import dataclasses
 import gc
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 import urllib.request
@@ -82,40 +84,158 @@ def _looks_like_playlist_url(url: str) -> bool:
 
 @dataclass(frozen=True)
 class Quality:
-    key: str                 # "best", "h1080", "audio"
+    key: str                 # "best", "h1080"
     label: str               # "1080p (Full HD)"
     height: int | None = None
-    audio_only: bool = False
     size: int | None = None  # approximate bytes, if known
-
-    @property
-    def ext(self) -> str:
-        return "mp3" if self.audio_only else "mp4"
 
     @property
     def display(self) -> str:
         return f"{self.label}  ·  ~{human_size(self.size)}" if self.size else self.label
 
-    def ydl_opts(self) -> dict:
-        """Format selection for this choice. Prefers H.264 video + AAC/M4A audio in MP4."""
-        if self.audio_only:
-            return {
-                "format": "ba/b",
-                "format_sort": ["acodec:aac", "abr"],
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": str(MP3_KBPS),
-                }],
-            }
-        res = f"res:{self.height}" if self.height else "res"
+
+BEST = Quality("best", "Best available")
+
+
+@dataclass(frozen=True)
+class OutputFormat:
+    key: str
+    label: str
+    ext: str
+    kind: str                 # "video", "audio" or "image"
+    convert: str | None = None  # re-encode after download: "edit" or "prores"
+
+    @property
+    def uses_quality(self) -> bool:
+        return self.kind == "video"
+
+
+FORMATS = (
+    OutputFormat("original", "Original (MP4)", "mp4", "video"),
+    OutputFormat("edit", "Edit-ready MP4 (constant frame rate)", "mp4", "video", convert="edit"),
+    OutputFormat("prores", "ProRes 422 HQ (.mov) for editing", "mov", "video", convert="prores"),
+    OutputFormat("mp3", "Audio only (MP3)", "mp3", "audio"),
+    OutputFormat("wav", "Audio only (WAV)", "wav", "audio"),
+    OutputFormat("jpg", "Thumbnail image (JPG)", "jpg", "image"),
+)
+FORMATS_BY_KEY = {f.key: f for f in FORMATS}
+ORIGINAL = FORMATS_BY_KEY["original"]
+
+
+def format_by_key(key: str | None) -> OutputFormat:
+    return FORMATS_BY_KEY.get(key or "", ORIGINAL)
+
+
+@dataclass(frozen=True)
+class SubtitleChoice:
+    lang: str                 # yt-dlp language code, e.g. "en" or "en-orig"
+    label: str                # "English" / "English (auto-generated)"
+    auto: bool = False
+
+
+def format_opts(quality: Quality | None, fmt: OutputFormat) -> dict:
+    """yt-dlp format selection for a quality + output format.
+
+    Video prefers H.264 + AAC/M4A in MP4 (merged, or remuxed if the source is a single WebM).
+    """
+    if fmt.kind == "audio":
         return {
-            "format": "bv*+ba/b",
-            "format_sort": [res, "vcodec:h264", "acodec:aac", "ext:mp4:m4a"],
-            "merge_output_format": "mp4",
-            # A single pre-merged file (e.g. WebM) is remuxed so the result is always .mp4.
-            "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
+            "format": "ba/b",
+            "format_sort": ["acodec:aac", "abr"],
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": fmt.ext,
+                "preferredquality": str(MP3_KBPS) if fmt.ext == "mp3" else "0",
+            }],
         }
+    if fmt.kind == "image":
+        return {
+            "skip_download": True,
+            "writethumbnail": True,
+            "postprocessors": [{"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"}],
+        }
+    height = quality.height if quality else None
+    res = f"res:{height}" if height else "res"
+    return {
+        "format": "bv*+ba/b",
+        "format_sort": [res, "vcodec:h264", "acodec:aac", "ext:mp4:m4a"],
+        "merge_output_format": "mp4",
+        "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
+    }
+
+
+# --------------------------------------------------------------------------------------------
+# Clip ranges, project names, batch links
+# --------------------------------------------------------------------------------------------
+
+_TIME_RX = re.compile(r"^\s*(?:(\d+):)?(?:(\d+):)?(\d+(?:[.,]\d+)?)\s*$")
+
+
+def parse_timecode(text: str) -> float | None:
+    """'83', '1:23', '0:01:23.5' -> seconds. None if empty or not a time."""
+    m = _TIME_RX.match(text or "")
+    if not m:
+        return None
+    a, b, sec = m.groups()
+    parts = [p for p in (a, b) if p is not None]
+    total = float(sec.replace(",", "."))
+    for i, p in enumerate(reversed(parts)):
+        total += int(p) * (60 ** (i + 1))
+    return total
+
+
+def format_timecode(seconds: float) -> str:
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    frac = seconds - int(seconds)
+    tail = f"{s:02d}" + (f".{int(round(frac * 10))}" if frac >= 0.05 else "")
+    return f"{h}:{m:02d}:{tail}" if h else f"{m}:{tail}"
+
+
+def clip_suffix(clip: tuple[float, float] | None) -> str:
+    """Windows-safe file name suffix for a clip, e.g. ' (clip 0m42s-0m58s)'."""
+    if not clip:
+        return ""
+
+    def t(x: float) -> str:
+        s = int(x)
+        h, rem = divmod(s, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h}h{m:02d}m{s:02d}s" if h else f"{m}m{s:02d}s"
+
+    return f" (clip {t(clip[0])}-{t(clip[1])})"
+
+
+def project_parts(text: str | None) -> list[str]:
+    """'Nike / Spring 2027' -> ['Nike', 'Spring 2027'] (Windows-safe, empty parts dropped)."""
+    if not text:
+        return []
+    return [safe_folder_name(p.strip()) for p in re.split(r"[/\\]", text) if p.strip()]
+
+
+def project_prefix(text: str | None, today: str | None = None) -> str:
+    """File name prefix for a project: 'Nike_Spring-2027_2026-09-25_'."""
+    parts = project_parts(text)
+    if not parts:
+        return ""
+    import datetime
+    today = today or datetime.date.today().isoformat()
+    return "_".join(p.replace(" ", "-") for p in parts) + f"_{today}_"
+
+
+_URL_IN_TEXT_RX = re.compile(r"(?:https?://|www\.)[^\s<>\"']+", re.IGNORECASE)
+
+
+def extract_urls(text: str) -> list[str]:
+    """All distinct web links in pasted text (one or many), in order."""
+    seen, out = set(), []
+    for raw in _URL_IN_TEXT_RX.findall(text or ""):
+        url = normalize_url(raw.rstrip(".,);]"))
+        if url and url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
 
 
 @dataclass
@@ -144,6 +264,8 @@ class CheckRequest:
     login: LoginSource = NONE_SOURCE
     password: str | None = None
     referer: str | None = None
+    # If the site says it needs a login and no login was used, retry once with this one.
+    fallback_login: LoginSource | None = None
 
 
 @dataclass
@@ -153,10 +275,18 @@ class CheckResult:
     video: VideoInfo | None = None
     qualities: list[Quality] = field(default_factory=list)
     playlist: PlaylistInfo | None = None
+    subtitles: list[SubtitleChoice] = field(default_factory=list)
+    has_video: bool = True
+    used_login: bool = False     # the check only worked with the browser login
 
     @property
     def ok(self) -> bool:
         return self.result.status is Status.READY
+
+    @property
+    def formats(self) -> list[OutputFormat]:
+        """Output formats this source supports."""
+        return [f for f in FORMATS if self.has_video or f.kind != "video"]
 
 
 @dataclass
@@ -166,7 +296,7 @@ class Progress:
     eta: float | None          # seconds
     downloaded: int | None
     total: int | None
-    phase: str                 # "starting", "downloading", "processing"
+    phase: str                 # "starting", "downloading", "processing", "converting"
     item: int = 1              # 1-based index when downloading several videos
     items: int = 1
     title: str = ""
@@ -175,11 +305,15 @@ class Progress:
 @dataclass
 class DownloadJob:
     urls: list[str]
-    quality: Quality
+    quality: Quality | None
     folder: Path
     login: LoginSource = NONE_SOURCE
     password: str | None = None
     referer: str | None = None
+    fmt: OutputFormat = ORIGINAL
+    clip: tuple[float, float] | None = None    # (start, end) seconds: download only this part
+    subtitles: SubtitleChoice | None = None
+    name_prefix: str = ""                      # project prefix, e.g. "Nike_Spring_2026-09-25_"
 
 
 @dataclass
@@ -292,7 +426,7 @@ def _estimate_size(selected: dict, duration: float | None) -> int | None:
 
 def _select(ydl, info: dict, quality: Quality) -> dict | None:
     """Run yt-dlp's own format selector offline, so sizes match what will be downloaded."""
-    opts = quality.ydl_opts()
+    opts = format_opts(quality, ORIGINAL)
     ydl.params["format"] = opts["format"]
     ydl.params["format_sort"] = opts["format_sort"]
     slim = {k: v for k, v in info.items() if k not in ("requested_formats", "requested_downloads")}
@@ -316,39 +450,71 @@ def _selector_ydl():
     return yt_dlp.YoutubeDL(params)
 
 
-def list_qualities(info: dict) -> list[Quality]:
-    """Quality choices built from the formats the source actually has.
+def has_video_formats(info: dict) -> bool:
+    return any(_has_video(f) for f in _formats_of(info))
 
-    Always: "Best available (MP4)", each real height (deduplicated, highest first),
-    and "Audio only (MP3)". Sources with no video only get the audio choice.
+
+def list_qualities(info: dict) -> list[Quality]:
+    """Video quality choices built from the formats the source actually has.
+
+    "Best available" plus each real height (deduplicated, highest first), with the size
+    yt-dlp's own format selector would download. Audio-only sources get no choices (their
+    formats are MP3/WAV, see :data:`FORMATS`).
     """
     fmts = _formats_of(info)
     duration = info.get("duration")
-    has_video = any(_has_video(f) for f in fmts)
+    if not any(_has_video(f) for f in fmts):
+        return []
     heights = sorted({h for f in fmts if _has_video(f) and (h := _height_of(f))}, reverse=True)
 
-    out: list[Quality] = []
-    if has_video:
-        best_h = heights[0] if heights else None
-        label = "Best available (MP4)" + (f" — {best_h}p" if best_h else "")
-        out.append(Quality("best", label))
-        for h in heights:
-            name = HEIGHT_NAMES.get(h)
-            out.append(Quality(f"h{h}", f"{h}p ({name})" if name else f"{h}p", height=h))
-    out.append(Quality("audio", "Audio only (MP3)", audio_only=True))
+    best_h = heights[0] if heights else None
+    out = [Quality("best", "Best available" + (f" — {best_h}p" if best_h else ""))]
+    for h in heights:
+        name = HEIGHT_NAMES.get(h)
+        out.append(Quality(f"h{h}", f"{h}p ({name})" if name else f"{h}p", height=h))
 
     sized = []
     with _selector_ydl() as ydl:  # one instance for all choices: creating one is slow
         for q in out:
-            size = None
-            if q.audio_only and duration:
-                size = int(duration * MP3_KBPS * 1000 / 8)
-            else:
-                selected = _select(ydl, info, q)
-                if selected:
-                    size = _estimate_size(selected, duration)
-            sized.append(Quality(q.key, q.label, q.height, q.audio_only, size))
+            selected = _select(ydl, info, q)
+            size = _estimate_size(selected, duration) if selected else None
+            sized.append(Quality(q.key, q.label, q.height, size))
     return sized
+
+
+_LANG_NAMES = {
+    "en": "English", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese",
+    "nl": "Dutch", "ja": "Japanese", "ko": "Korean", "zh": "Chinese", "ru": "Russian", "ar": "Arabic",
+    "hi": "Hindi", "sv": "Swedish", "da": "Danish", "no": "Norwegian", "fi": "Finnish", "pl": "Polish",
+    "tr": "Turkish", "he": "Hebrew", "id": "Indonesian", "th": "Thai", "vi": "Vietnamese", "uk": "Ukrainian",
+}
+
+
+def _lang_label(code: str) -> str:
+    base = re.split(r"[-_]", code)[0].lower()
+    name = _LANG_NAMES.get(base, code)
+    region = code[len(base) + 1:] if len(code) > len(base) else ""
+    if region and region.lower() not in ("orig",):
+        name = f"{name} ({region})"
+    return name
+
+
+def list_subtitles(info: dict) -> list[SubtitleChoice]:
+    """Subtitle languages the video has: uploaded ones first, then the auto-generated
+    captions in the video's own language (not the 100+ machine translations)."""
+    manual = [k for k in (info.get("subtitles") or {}) if k != "live_chat"]
+    choices = [SubtitleChoice(k, _lang_label(k)) for k in manual]
+    auto = info.get("automatic_captions") or {}
+    originals = [k for k in auto if k.endswith("-orig")]
+    if not originals:
+        lang = (info.get("language") or "").split("-")[0]
+        originals = [k for k in auto if lang and k == lang] or [k for k in auto if k == "en"]
+    for k in originals:
+        base = k[:-5] if k.endswith("-orig") else k
+        if base not in manual:
+            choices.append(SubtitleChoice(k, f"{_lang_label(base)} (auto-generated)", auto=True))
+    en_first = sorted(choices, key=lambda c: (not c.lang.startswith("en"), c.auto))
+    return en_first
 
 
 # Held while warm_up() runs, so a link check never imports yt-dlp's extractor modules at the
@@ -392,7 +558,7 @@ def default_quality(qualities: list[Quality], preferred: str) -> Quality | None:
     return qualities[0]
 
 
-FINAL_EXTS = ("mp4", "mp3")
+FINAL_EXTS = tuple(sorted({"mp4", "mp3", "mov", "wav", "jpg"}))
 
 
 def unique_stem(folder: Path, stem: str, ext: str) -> str:
@@ -484,6 +650,8 @@ class Engine:
             "socket_timeout": 20,
             "retries": 5,
             "fragment_retries": 10,
+            # Streams made of many small pieces (HLS/DASH, e.g. Vimeo) download 4 pieces at once.
+            "concurrent_fragment_downloads": 4,
             "overwrites": False,
             "continuedl": False,
             "allow_unplayable_formats": False,  # never; see module docstring
@@ -516,6 +684,17 @@ class Engine:
     def check_link(self, req: CheckRequest) -> CheckResult:
         with _WARM_LOCK:
             pass  # wait for a running warm-up to finish
+        res = self._check_once(req)
+        fallback = req.fallback_login
+        if (res.result.status is Status.NEEDS_LOGIN and req.login.is_none
+                and fallback is not None and not fallback.is_none):
+            log.info("Site asked for a login; retrying with the browser login (%s)", fallback.app_name)
+            retry = self._check_once(dataclasses.replace(req, login=fallback, fallback_login=None))
+            retry.used_login = True
+            return retry
+        return res
+
+    def _check_once(self, req: CheckRequest) -> CheckResult:
         url = normalize_url(req.url)
         if not url:
             return CheckResult(classify_error(f"{req.url!r} is not a valid URL"))
@@ -554,7 +733,8 @@ class Engine:
                 site=info.get("extractor_key"),
             )
             return CheckResult(ready(), url=info.get("webpage_url") or url, video=video,
-                               qualities=qualities, playlist=playlist)
+                               qualities=qualities, playlist=playlist, subtitles=list_subtitles(info),
+                               has_video=bool(qualities))
         except Exception as e:  # noqa: BLE001 - every failure becomes a state
             result = self._classify(e, req.login, req.password, req.referer)
             log.info("Check failed: %s", result.status.value)
@@ -621,8 +801,23 @@ class Engine:
     def _download_one(self, url: str, job: DownloadJob, folder: Path, index: int, total: int,
                       on_progress: Callable[[Progress], None]) -> Path:
         logger = _YdlLogger(self.redact)
+        fmt = job.fmt
         opts = self._base_opts(job.login, job.password, job.referer, logger)
-        opts.update(job.quality.ydl_opts())
+        opts.update(format_opts(job.quality, fmt))
+        if job.clip:
+            from yt_dlp.utils import download_range_func
+            opts["download_ranges"] = download_range_func(None, [job.clip])
+            opts["force_keyframes_at_cuts"] = fmt.kind == "video"  # exact cut points
+        if job.subtitles and fmt.kind == "video":
+            sub = job.subtitles
+            opts.update({
+                "writesubtitles": not sub.auto,
+                "writeautomaticsub": sub.auto,
+                "subtitleslangs": [sub.lang],
+                "subtitlesformat": "srt/vtt/best",
+            })
+            opts["postprocessors"] = [*opts.get("postprocessors", []),
+                                      {"key": "FFmpegSubtitlesConvertor", "format": "srt", "when": "before_dl"}]
         state = _ProgressState(index=index, items=total)
 
         def progress_hook(d: dict) -> None:
@@ -648,6 +843,7 @@ class Engine:
         title = url
         outcome: ErrorInfo | None = None
         cancelled = False
+        final: Path | None = None
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 # Resolve the video and pick formats first, so we know the title and can
@@ -662,10 +858,22 @@ class Engine:
                 state.parts = info.get("requested_formats") or []
                 state.duration = info.get("duration")
                 base = Path(ydl.prepare_filename(info, outtmpl="%(title)s")).name or "video"
-                stem = unique_stem(folder, base, job.quality.ext)
-                ydl.params["outtmpl"]["default"] = stem.replace("%", "%%") + ".%(ext)s"
-                log.info("Downloading item %d/%d as %s.%s", index, total, stem, job.quality.ext)
+                stem = unique_stem(folder, job.name_prefix + base + clip_suffix(job.clip), fmt.ext)
+                # Files that get converted afterwards are downloaded under a temporary name.
+                download_stem = stem + ".source" if fmt.convert else stem
+                ydl.params["outtmpl"]["default"] = download_stem.replace("%", "%%") + ".%(ext)s"
+                log.info("Downloading item %d/%d as %s.%s", index, total, stem, fmt.ext)
                 ydl.process_ie_result(info, download=True)
+            if fmt.convert:
+                source = _find_output(folder, download_stem, before)
+                final = folder / f"{stem}.{fmt.ext}"
+                duration = (job.clip[1] - job.clip[0]) if job.clip else info.get("duration")
+                self._convert(source, final, fmt.convert, _fps_of(info), duration,
+                              lambda pct: on_progress(Progress(pct, None, None, None, None, "converting",
+                                                               index, total, title)))
+                source.unlink(missing_ok=True)
+                for sub in folder.glob(f"{_glob_escape(download_stem)}.*.srt"):
+                    sub.replace(folder / (stem + sub.name[len(download_stem):]))
         except BaseException as e:  # noqa: BLE001
             cancelled = isinstance(e, (DownloadCancelled, KeyboardInterrupt)) or self._cancel.is_set()
             if not cancelled:
@@ -682,14 +890,57 @@ class Engine:
             log.debug("Download failure detail: %s", outcome.detail)
             raise _Failed(title, outcome)
 
-        final = folder / f"{stem}.{job.quality.ext}"
+        final = final or folder / f"{stem}.{fmt.ext}"
         if final.is_file():
             return final
-        new = [folder / n for n in _listdir(folder) - before
-               if n.startswith(stem + ".") and not n.endswith(PARTIAL_SUFFIXES)]
-        if new:
-            return max(new, key=lambda p: p.stat().st_size)
+        found = _find_output(folder, stem, before, exclude_ext=(".srt",))
+        if found:
+            return found
         raise _Failed(title, classify_error("Download finished but the file was not found"))
+
+    def _convert(self, src: Path, dst: Path, kind: str, fps: float | None, duration: float | None,
+                 on_percent: Callable[[float | None], None]) -> None:
+        """Re-encode ``src`` into an editing-friendly file. Cancellable; reports percent."""
+        ffmpeg = _ffmpeg_exe()
+        rate = _frame_rate_arg(fps)
+        if kind == "edit":
+            video = ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p",
+                     "-fps_mode", "cfr", *(["-r", rate] if rate else []), "-movflags", "+faststart"]
+            audio = ["-c:a", "aac", "-b:a", "320k", "-ar", "48000"]
+        elif kind == "prores":
+            video = ["-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0", "-pix_fmt", "yuv422p10le",
+                     "-fps_mode", "cfr", *(["-r", rate] if rate else [])]
+            audio = ["-c:a", "pcm_s16le", "-ar", "48000"]
+        else:
+            raise ValueError(kind)
+        tmp = dst.with_name(dst.stem + ".converting" + dst.suffix)
+        cmd = [ffmpeg, "-hide_banner", "-nostdin", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a?",
+               *video, *audio, "-progress", "pipe:1", "-nostats", "-loglevel", "error", str(tmp)]
+        log.info("Converting to %s (%s)", kind, dst.suffix)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        err_lines: deque[str] = deque(maxlen=20)
+        threading.Thread(target=lambda: err_lines.extend(proc.stderr), daemon=True).start()
+        on_percent(0.0 if duration else None)
+        try:
+            for line in proc.stdout:
+                if self._cancel.is_set():
+                    proc.kill()
+                    proc.wait()
+                    tmp.unlink(missing_ok=True)
+                    raise DownloadCancelled("Cancelled by user")
+                key, _, value = line.strip().partition("=")
+                if key == "out_time_us" and duration and value.isdigit():
+                    on_percent(min(100.0, int(value) / 1e6 / duration * 100))
+            code = proc.wait()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        if code != 0:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError("FFmpeg conversion failed: " + " ".join(err_lines)[-500:])
+        tmp.replace(dst)
+        on_percent(100.0)
 
     @staticmethod
     def _cleanup(folder: Path, stem: str, before: set[str]) -> None:
@@ -715,6 +966,47 @@ class Engine:
                     time.sleep(0.2 * (attempt + 1))
             else:
                 log.warning("Could not remove partial file %s", name)
+
+
+def _find_output(folder: Path, stem: str, before: set[str], exclude_ext: tuple[str, ...] = ()) -> Path | None:
+    """The largest new finished file named ``stem.<ext>`` (ignores partials and subtitles)."""
+    prefix = stem + "."
+    found = [folder / n for n in _listdir(folder) - before
+             if n.startswith(prefix) and "." not in n[len(prefix):]
+             and not n.endswith(PARTIAL_SUFFIXES) and not n.endswith(exclude_ext or ("\0",))]
+    return max(found, key=lambda p: p.stat().st_size) if found else None
+
+
+def _glob_escape(text: str) -> str:
+    return re.sub(r"([\[\]*?])", r"[\1]", text)
+
+
+def _fps_of(info: dict) -> float | None:
+    for f in info.get("requested_formats") or [info]:
+        if f.get("vcodec") not in (None, "none") and f.get("fps"):
+            return float(f["fps"])
+    return info.get("fps")
+
+
+def _frame_rate_arg(fps: float | None) -> str | None:
+    """FFmpeg -r value; NTSC rates become exact fractions (29.97 -> 30000/1001)."""
+    if not fps or fps <= 0:
+        return None
+    for ntsc, frac in ((23.976, "24000/1001"), (29.97, "30000/1001"), (59.94, "60000/1001")):
+        if abs(fps - ntsc) < 0.01:
+            return frac
+    return str(round(fps, 3)).rstrip("0").rstrip(".")
+
+
+def _ffmpeg_exe() -> str:
+    ff = paths.ffmpeg_dir()
+    if ff:
+        return str(ff / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg"))
+    import shutil
+    found = shutil.which("ffmpeg")
+    if not found:
+        raise RuntimeError("ffmpeg not found")
+    return found
 
 
 class _Cancelled(Exception):

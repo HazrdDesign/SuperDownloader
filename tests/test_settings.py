@@ -19,7 +19,8 @@ def test_defaults_when_missing(appdata):
     assert s == Settings()
     assert s.check_updates_on_launch is True
     assert s.default_quality == "best"
-    assert s.login_source == "none"
+    assert s.login_source == "auto"
+    assert s.default_format == "original"
 
 
 def test_default_save_folder_is_downloads(appdata):
@@ -95,3 +96,48 @@ def test_known_folder_downloads_resolves():
     d = paths.downloads_dir()
     assert d.is_absolute()
     assert d.exists()
+
+
+def test_version1_settings_are_upgraded(appdata):
+    """Settings from the first version: 'none' login becomes automatic, audio becomes a format."""
+    appdata.mkdir(parents=True)
+    paths.settings_file().write_text(json.dumps({
+        "save_folder": "", "default_quality": "audio", "login_source": "none",
+        "check_updates_on_launch": True, "window_geometry": ""}), encoding="utf-8")
+    s = settings.load()
+    assert s.login_source == "auto"
+    assert s.default_quality == "best" and s.default_format == "mp3"
+
+
+def test_explicit_never_login_is_kept_in_version2(appdata):
+    settings.save(Settings(login_source="none"))
+    assert settings.load().login_source == "none"
+
+
+def test_recent_projects(appdata):
+    s = Settings()
+    for p in ["A / 1", "B", "a / 1", "  ", "C"]:
+        settings.remember_project(s, p)
+    assert s.recent_projects == ["C", "a / 1", "B"]
+    for i in range(20):
+        settings.remember_project(s, f"P{i}")
+    assert len(s.recent_projects) == settings.MAX_RECENT_PROJECTS
+    settings.save(s)
+    assert settings.load().recent_projects == s.recent_projects
+
+
+def test_legacy_app_folder_is_migrated(tmp_path, monkeypatch):
+    monkeypatch.delenv("VD_APPDATA", raising=False)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    old = tmp_path / "VideoDownloader"
+    (old / "engine").mkdir(parents=True)
+    (old / "engine" / "active.json").write_text("{}")
+    (old / "settings.json").write_text(json.dumps({"login_source": "firefox:/zen", "version": 2}))
+    (old / "logs").mkdir()
+    assert paths.migrate_legacy_data() == old
+    new = tmp_path / "SuperDownloader"
+    assert json.loads((new / "settings.json").read_text())["login_source"] == "firefox:/zen"
+    assert (new / "engine" / "active.json").is_file()
+    assert not (new / "logs").exists()
+    assert paths.migrate_legacy_data() is None  # only once
