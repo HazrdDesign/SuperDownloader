@@ -1,0 +1,193 @@
+name: build
+
+# One run per change builds Super Downloader for Windows and Mac side by side, so both downloads
+# are on the same page (Actions -> build -> newest run -> Artifacts):
+#   SuperDownloader-Windows  SuperDownloader-Setup.exe and SuperDownloader-Portable.exe
+#   SuperDownloader-Mac      SuperDownloader-mac.dmg (Apple silicon)
+# Windows: built exactly as scripts\build.bat does on a PC, then the installer is installed and
+# every build self-tested. Mac: built as scripts/build_mac.sh does, installed from the .dmg and
+# self-tested. Both also run the live-site acceptance smoke tests.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Inno Setup (for the installer)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Build (scripts\build.bat)
+        shell: cmd
+        timeout-minutes: 30
+        run: scripts\build.bat
+
+      - name: Self-test reports
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($f in 'build\selftest.json', 'build\selftest-folder.json') {
+            if (Test-Path $f) { "== $f"; Get-Content $f } else { "no $f" }
+          }
+
+      - name: Sizes and start-up times
+        shell: pwsh
+        run: |
+          foreach ($f in 'dist\SuperDownloader-Portable.exe', 'dist\SuperDownloader-Setup.exe') {
+            if (Test-Path $f) { "{0}: {1:N1} MB" -f $f, ((Get-Item $f).Length / 1MB) } else { "missing: $f" }
+          }
+          "Portable (unpacks on every start):"
+          scripts\selftest.ps1 -Report "$PWD\build\t1.json" | Select-Object -First 1
+          "Installed folder version:"
+          scripts\selftest.ps1 -Exe dist\SuperDownloader-folder\SuperDownloader.exe -Report "$PWD\build\t2.json" | Select-Object -First 1
+
+      - name: Installer installs and the installed app runs
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\SuperDownloader-Setup.exe -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "installer exited with $($p.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\Super Downloader\SuperDownloader.exe'
+          if (-not (Test-Path $exe)) { throw "not installed at $exe" }
+          $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Super Downloader.lnk'
+          if (-not (Test-Path $lnk)) { throw "no Start menu shortcut" }
+          scripts\selftest.ps1 -Exe $exe -Report "$PWD\build\installed.json"
+
+      - name: Exe loads an updated engine from %APPDATA%
+        shell: pwsh
+        run: |
+          $appdata = Join-Path $env:RUNNER_TEMP 'vd-appdata'
+          $env:VD_APPDATA = $appdata
+          .venv\Scripts\python.exe -c "from app import updater; i = updater.check_for_update('2000.1.1'); print(updater.install_update(i))"
+          $env:VD_ENGINE_ALLOW_OLDER = '1'
+          scripts\selftest.ps1 -Report "$appdata\selftest.json"
+          $r = Get-Content "$appdata\selftest.json" | ConvertFrom-Json
+          if ($r.engine_source -ne 'updated' -or $r.engine_file -notlike "$appdata*") { throw 'exe did not load the downloaded engine' }
+
+      - name: Updater against real PyPI
+        shell: cmd
+        env:
+          VD_NETWORK_TESTS: "1"
+        run: .venv\Scripts\python.exe -m pytest tests\test_updater.py
+
+      - name: Live acceptance smoke tests (YouTube, Vimeo)
+        id: acceptance
+        continue-on-error: true
+        shell: cmd
+        run: .venv\Scripts\python.exe scripts\acceptance_smoke.py build\acceptance
+
+      - name: Acceptance report
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path build\acceptance\acceptance.md) {
+            Get-Content build\acceptance\acceptance.md
+            Get-Content build\acceptance\acceptance.md | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          }
+
+      # The download people use: the installer and the portable exe.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperDownloader-Windows
+          path: |
+            dist/SuperDownloader-Setup.exe
+            dist/SuperDownloader-Portable.exe
+          if-no-files-found: error
+
+      - name: Test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-test-reports
+          path: |
+            build/selftest*.json
+            build/acceptance/
+          if-no-files-found: ignore
+
+  mac:
+    name: Mac (Apple silicon)
+    runs-on: macos-14   # Apple silicon
+    timeout-minutes: 60
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python has Tk
+        run: python -c "import tkinter; r = tkinter.Tk(); print('Tk', r.tk.call('info', 'patchlevel')); r.destroy()"
+
+      - name: Build (scripts/build_mac.sh)
+        timeout-minutes: 30
+        env:
+          PYTHON: python
+        run: scripts/build_mac.sh
+
+      - name: Bundled tools
+        if: always()
+        run: |
+          cat vendor/ffmpeg/VERSION.txt vendor/deno/VERSION.txt || true
+          shasum -a 256 vendor/_downloads/* || true
+
+      - name: Sizes and start-up time
+        run: |
+          du -sh "dist/Super Downloader.app" dist/SuperDownloader-mac.dmg
+          file "dist/Super Downloader.app/Contents/MacOS/SuperDownloader" \
+               "dist/Super Downloader.app/Contents/Frameworks/ffmpeg/ffmpeg" \
+               "dist/Super Downloader.app/Contents/Frameworks/deno/deno" || find "dist/Super Downloader.app" -name ffmpeg
+
+      - name: Installed from the disk image, the app runs
+        run: |
+          hdiutil attach -nobrowse -mountpoint /tmp/sd dist/SuperDownloader-mac.dmg
+          ls -la /tmp/sd
+          test -L /tmp/sd/Applications
+          ditto "/tmp/sd/Super Downloader.app" "$HOME/Applications/Super Downloader.app"
+          hdiutil detach /tmp/sd
+          codesign --verify --deep --strict "$HOME/Applications/Super Downloader.app"
+          scripts/selftest_mac.sh "$HOME/Applications/Super Downloader.app" "$PWD/build/installed-mac.json"
+
+      - name: App loads an updated engine
+        run: |
+          export VD_APPDATA="$RUNNER_TEMP/vd-appdata"
+          .venv/bin/python -c "from app import updater; i = updater.check_for_update('2000.1.1'); print(updater.install_update(i))"
+          export VD_ENGINE_ALLOW_OLDER=1
+          scripts/selftest_mac.sh "$PWD/dist/Super Downloader.app" "$VD_APPDATA/selftest.json"
+          .venv/bin/python -c "import json, os, sys; r = json.load(open(os.environ['VD_APPDATA'] + '/selftest.json')); sys.exit(0 if r['engine_source'] == 'updated' and r['engine_file'].startswith(os.environ['VD_APPDATA']) else 'did not load the downloaded engine')"
+
+      - name: Live acceptance smoke tests (YouTube, Vimeo)
+        continue-on-error: true
+        run: .venv/bin/python scripts/acceptance_smoke.py build/acceptance
+
+      # The download people use: just the installer (.dmg).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperDownloader-Mac
+          path: dist/SuperDownloader-mac.dmg
+          if-no-files-found: error
+
+      - name: Test reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-test-reports
+          path: |
+            build/selftest-mac.json
+            build/installed-mac.json
+            build/acceptance
+          if-no-files-found: ignore

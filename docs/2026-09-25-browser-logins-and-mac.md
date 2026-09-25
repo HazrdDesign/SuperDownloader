@@ -76,8 +76,8 @@ browsers are still tried.
 
 ## The Mac version
 
-Built since 2026-09-25 for Apple silicon (M1 and newer), on every push, by `.github/workflows/mac-build.yml`
-(`scripts/build_mac.sh`). Download **SuperDownloader-mac** from the newest green *mac-build* run.
+Built since 2026-09-25 for Apple silicon (M1 and newer), on every push, by the Mac job in `.github/workflows/build.yml`
+(`scripts/build_mac.sh`). Download **SuperDownloader-Mac** from the newest green *build* run.
 
 **Checked automatically on GitHub's Apple silicon Mac:**
 - the whole test suite (234 passed, 2 Windows-only tests skipped)

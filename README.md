@@ -27,12 +27,19 @@ to install.
 
 ## Installing
 
-The app is built on GitHub for both systems every time the code changes.
+The app is built on GitHub for both systems every time the code changes. Both downloads are on the same page:
+**Actions → build** (left) → the newest run with a green tick → scroll to **Artifacts**:
+
+| Download | Contains |
+|---|---|
+| **SuperDownloader-Mac** | `SuperDownloader-mac.dmg`, for Apple silicon Macs (M1 and newer) |
+| **SuperDownloader-Windows** | `SuperDownloader-Setup.exe` (installer) and `SuperDownloader-Portable.exe` |
+
+The `*-test-reports` downloads are only for checking a build.
 
 ### Mac (Apple silicon: M1 or newer)
 
-Download from the latest **mac-build** run (Actions → newest green run → *Artifacts* → **SuperDownloader-mac**),
-unzip it, open **SuperDownloader-mac.dmg** and drag **Super Downloader** onto **Applications**.
+Download **SuperDownloader-Mac** (see above), unzip it, open **SuperDownloader-mac.dmg** and drag **Super Downloader** onto **Applications**.
 
 **The first time you open it**, macOS says it can't check the app for malicious software, because it isn't signed
 with an Apple developer certificate yet. Click **Done**, then open **System Settings → Privacy & Security**, scroll
@@ -46,8 +53,7 @@ Settings, history and logs are in `~/Library/Application Support/SuperDownloader
 
 ### Windows
 
-Download from the latest **windows-build** run on GitHub (Actions → newest green run → *Artifacts* →
-**SuperDownloader**) and unzip it:
+Download **SuperDownloader-Windows** (see above) and unzip it:
 
 | File | Use it when |
 |---|---|
@@ -156,7 +162,7 @@ Settings, history and logs are in `%APPDATA%\SuperDownloader\`. Passwords and co
 **Mac:** on an Apple silicon Mac with Python 3.11+ from [python.org](https://www.python.org/downloads/macos/)
 (it includes Tk), run `scripts/build_mac.sh`. It fetches the pinned FFmpeg 9.0.2 and Deno 2.9.6 builds
 (`scripts/fetch_tools_mac.sh`, checksums checked), runs the tests, builds `dist/Super Downloader.app`, self-tests it and
-makes `dist/SuperDownloader-mac.dmg`. GitHub Actions (`.github/workflows/mac-build.yml`) does the same on every push.
+makes `dist/SuperDownloader-mac.dmg`. GitHub Actions (the Mac job in `.github/workflows/build.yml`) does the same on every push.
 
 **Windows:**
 
@@ -176,7 +182,7 @@ It will:
 5. self-test both builds. The self-test downloads and converts a local test clip inside the exe, with no internet needed.
 6. build `dist\SuperDownloader-Setup.exe` with Inno Setup (`installer\SuperDownloader.iss`).
 
-GitHub Actions (`.github/workflows/windows-build.yml`) does the same on every push. It also installs the
+GitHub Actions (the Windows job in `.github/workflows/build.yml`) does the same on every push. It also installs the
 installer, runs the installed app, and runs live checks against YouTube and Vimeo.
 
 ### Changing the brand colors
