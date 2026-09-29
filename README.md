@@ -193,12 +193,13 @@ installer, runs the installed app, and runs live checks against YouTube and Vime
 
 ### Publishing a new version
 
-1. Change `__version__` in `app/__init__.py` (for example to `2.0.1`) and commit.
-2. On GitHub: **Actions → build** (left) → **Run workflow** (right) → tick **Publish a release** → **Run workflow**.
-   (Or push a matching tag: `git tag v2.0.1 && git push origin v2.0.1`.)
-3. GitHub builds and tests both systems (about 10 minutes), then publishes release `v2.0.1` with the Mac `.dmg`
-   and both Windows `.exe` files. The Download links above switch to it automatically. If a build fails, nothing
-   is published.
+1. Change `__version__` in `app/__init__.py` (for example to `2.0.1`), commit and push to the default branch.
+2. That's it. GitHub builds and tests both systems (about 10 minutes), sees that `v2.0.1` has no release yet and
+   publishes it with the Mac `.dmg` and both Windows `.exe` files. The Download links above switch to it
+   automatically. If a build fails, nothing is published.
+
+Pushes that keep the same version are built and tested but don't publish anything. A release can also be started by
+hand (**Actions → build → Run workflow** → tick **Publish a release**) or by pushing a matching `v2.0.1` tag.
 
 ### Changing the brand colors
 

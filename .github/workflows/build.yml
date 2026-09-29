@@ -9,10 +9,11 @@ name: build
 # self-tested. Both also run the live-site acceptance smoke tests.
 #
 # Releases publish the three files to the repository's Releases section, where anyone can download
-# them without a GitHub account. Either:
-#   - on GitHub: Actions -> build -> Run workflow -> tick "Publish a release" -> Run workflow, or
-#   - push a version tag: git tag v2.0.1 && git push origin v2.0.1
-# The version comes from app/__init__.py (a pushed tag must match it). Both builds must pass first.
+# them without a GitHub account (the README's Download links point to the newest one).
+# A release is published automatically when a push to the default branch carries a version
+# (__version__ in app/__init__.py) that has no release yet: raise the version, push, done.
+# It can also be started by hand (Actions -> build -> Run workflow -> "Publish a release") or by
+# pushing a matching tag (git tag v2.0.1 && git push origin v2.0.1). Both builds must pass first.
 on:
   push:          # every branch and every tag
   pull_request:
@@ -206,7 +207,10 @@ jobs:
   release:
     name: Publish release
     needs: [windows, mac]
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+    if: >-
+      startsWith(github.ref, 'refs/tags/v')
+      || (github.event_name == 'workflow_dispatch' && inputs.release)
+      || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the release and upload its files
@@ -223,21 +227,29 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME doesn't match the app version $tag in app/__init__.py"; exit 1
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
+            if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF_TYPE" = "branch" ]; then
+              echo "$tag is already released; raise __version__ in app/__init__.py to publish a new one."
+              echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
             echo "::error::Release $tag already exists. Raise __version__ in app/__init__.py for a new release."; exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
+        if: steps.version.outputs.publish == 'true'
         with:
           name: SuperDownloader-Windows
           path: release
 
       - uses: actions/download-artifact@v4
+        if: steps.version.outputs.publish == 'true'
         with:
           name: SuperDownloader-Mac
           path: release
 
       - name: Create the release
+        if: steps.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
