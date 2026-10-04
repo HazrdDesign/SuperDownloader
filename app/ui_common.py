@@ -95,7 +95,7 @@ def show_in_folder(path: Path) -> None:
     try:
         if sys.platform == "win32":
             if path.is_file():
-                subprocess.Popen(f'explorer /select,"{path}"')
+                subprocess.Popen(["explorer", f"/select,{path}"])
             else:
                 os.startfile(str(path if path.is_dir() else path.parent))  # type: ignore[attr-defined]
         elif sys.platform == "darwin":

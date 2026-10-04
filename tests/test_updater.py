@@ -73,7 +73,7 @@ def pypi_doc(name, version, filename, sha, requires=None):
         "urls": [
             {"packagetype": "sdist", "filename": f"{name}-{version}.tar.gz", "url": "https://x/sdist",
              "digests": {"sha256": "0"}},
-            {"packagetype": "bdist_wheel", "filename": filename, "url": f"https://files.example/{filename}",
+            {"packagetype": "bdist_wheel", "filename": filename, "url": f"https://files.pythonhosted.org/{filename}",
              "digests": {"sha256": sha}},
         ],
     }).encode()

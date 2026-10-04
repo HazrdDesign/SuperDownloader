@@ -1,17 +1,17 @@
-"""Super Downloader colors (dgnl.co branding) and the CustomTkinter theme built from them.
+"""Super Downloader colors and the CustomTkinter theme built from them.
 
 Every color in the app comes from this file. To rebrand, change the BRAND values below;
 the status colors (green / amber / red) stay separate so success and failure are always
 easy to tell apart.
 
-dgnl.co palette: background #232323, white text, accent #FF3B33. Dark theme, single accent.
+Palette: background #232323, white text, accent #FF3B33. Dark theme, single accent.
 """
 
 from __future__ import annotations
 
 import customtkinter as ctk
 
-# --- Brand (dgnl.co) ------------------------------------------------------------------------------
+# --- Brand ------------------------------------------------------------------------------
 BACKGROUND = "#232323"    # window background
 TEXT = "#F2F2F2"          # main text (a soft white: easier on the eyes than pure white on dark)
 ACCENT = "#FF3B33"        # buttons, progress bars, selected items

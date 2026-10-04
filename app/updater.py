@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
@@ -39,6 +40,7 @@ log = logging.getLogger(__name__)
 PYPI_JSON = "https://pypi.org/pypi/{name}/json"
 PYPI_VERSION_JSON = "https://pypi.org/pypi/{name}/{version}/json"
 MANIFEST = "active.json"
+WHEEL_HOST = "files.pythonhosted.org"
 
 ENGINE = "yt-dlp"
 EJS = "yt-dlp-ejs"
@@ -254,11 +256,18 @@ def _get_json(url: str, opener: Opener | None, timeout: float) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _check_wheel_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != WHEEL_HOST:
+        raise ValueError(f"unexpected download address for the engine update: {url}")
+
+
 def _pure_wheel(data: dict, name: str) -> Wheel:
     version = data["info"]["version"]
     for f in data.get("urls", []):
         fn = f.get("filename", "")
         if f.get("packagetype") == "bdist_wheel" and fn.endswith("-none-any.whl") and "py3" in fn:
+            _check_wheel_url(f["url"])
             return Wheel(name, version, f["url"], f["digests"]["sha256"], fn)
     raise ValueError(f"no pure-Python wheel for {name} {version}")
 

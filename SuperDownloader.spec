@@ -72,7 +72,7 @@ if MAC:
         mac_folder,
         name="Super Downloader.app",
         icon=common["icon"],
-        bundle_identifier="co.dgnl.superdownloader",
+        bundle_identifier="app.superdownloader",
         version=__version__,
         info_plist={
             "CFBundleDisplayName": "Super Downloader",

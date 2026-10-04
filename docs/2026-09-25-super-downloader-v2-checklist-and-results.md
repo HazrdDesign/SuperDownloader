@@ -1,6 +1,6 @@
 # Super Downloader 2.0: checklist and test results (2026-09-25)
 
-This release covers the rename, the dgnl.co theme, the simpler login, and these
+This release covers the rename, the new theme, the simpler login, and these
 features: queue, history, project folders and naming, clip ranges, editing formats (Original kept as the default),
 subtitles, the installer, and the conveniences (drag and drop, copied links, a sound and taskbar flash when done, faster chunked downloads).
 It also fixes the crash from the user log: `image "pyimage1" doesn't exist`.

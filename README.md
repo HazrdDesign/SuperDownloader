@@ -1,6 +1,6 @@
 # Super Downloader
 
-A simple app for Windows and Mac for downloading videos, made for dgnl.co. Paste a link and the app tells you
+A simple app for Windows and Mac for downloading videos. Paste a link and the app tells you
 right away whether it will work. Pick a quality and a format, then download. It runs on
 [yt-dlp](https://github.com/yt-dlp/yt-dlp), with FFmpeg and Deno built in, so there's nothing else
 to install.
