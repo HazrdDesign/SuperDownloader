@@ -18,6 +18,7 @@ import re
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
@@ -603,6 +604,8 @@ def safe_folder_name(name: str) -> str:
 
 
 def fetch_thumbnail(url: str, timeout: float = 10) -> bytes | None:
+    if urllib.parse.urlparse(url or "").scheme.lower() not in ("http", "https"):
+        return None  # urllib would also open file:// and ftp:// URLs
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - https thumbnail URL

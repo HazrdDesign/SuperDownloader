@@ -11,7 +11,7 @@
 AppId={{6C1E0B73-4B1F-4A34-9E53-5D2A1C7B8F10}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=dgnl.co
+AppPublisher=Super Downloader
 DefaultDirName={localappdata}\Programs\Super Downloader
 DisableProgramGroupPage=yes
 DisableDirPage=yes
